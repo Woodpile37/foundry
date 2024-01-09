@@ -4,7 +4,7 @@ use crate::eth::{backend::db::Db, error::BlockchainError};
 use alloy_primitives::{Address, Bytes, StorageKey, StorageValue, B256, U256, U64};
 use alloy_providers::provider::TempProvider;
 use alloy_rpc_types::{
-    trace::{GethDebugTracingOptions, GethTrace},
+    trace::{GethDebugTracingOptions, GethTrace, LocalizedTransactionTrace as Trace},
     AccessListWithGasUsed, Block, BlockId, BlockNumberOrTag as BlockNumber, BlockTransactions,
     CallRequest, EIP1186AccountProofResponse, FeeHistory, Filter, Log, Transaction,
     TransactionReceipt,
@@ -18,7 +18,6 @@ use parking_lot::{
     lock_api::{RwLockReadGuard, RwLockWriteGuard},
     RawRwLock, RwLock,
 };
-use reth_rpc_types::trace::parity::LocalizedTransactionTrace as Trace;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock as AsyncRwLock;
 
@@ -433,17 +432,15 @@ impl ClientFork {
     }
 
     pub async fn block_by_hash(&self, hash: B256) -> Result<Option<Block>, TransportError> {
-        if let Some(block) = self.storage_read().blocks.get(&hash).cloned() {
-            return Ok(Some(self.convert_to_tx_only_block(block)));
+        if let Some(mut block) = self.storage_read().blocks.get(&hash).cloned() {
+            block.transactions.convert_to_hashes();
+            return Ok(Some(block));
         }
 
-        let block = self
-            .fetch_full_block(hash)
-            .await?
-            .map(Into::into)
-            .map(|b| self.convert_to_tx_only_block(b));
-
-        Ok(block)
+        Ok(self.fetch_full_block(hash).await?.map(|mut b| {
+            b.transactions.convert_to_hashes();
+            b
+        }))
     }
 
     pub async fn block_by_hash_full(&self, hash: B256) -> Result<Option<Block>, TransportError> {
@@ -457,21 +454,20 @@ impl ClientFork {
         &self,
         block_number: u64,
     ) -> Result<Option<Block>, TransportError> {
-        if let Some(block) = self
+        if let Some(mut block) = self
             .storage_read()
             .hashes
             .get(&block_number)
-            .copied()
-            .and_then(|hash| self.storage_read().blocks.get(&hash).cloned())
+            .and_then(|hash| self.storage_read().blocks.get(hash).cloned())
         {
-            return Ok(Some(self.convert_to_tx_only_block(block)));
+            block.transactions.convert_to_hashes();
+            return Ok(Some(block));
         }
 
-        let block = self
-            .fetch_full_block(block_number)
-            .await?
-            .map(Into::into)
-            .map(|b| self.convert_to_tx_only_block(b));
+        let mut block = self.fetch_full_block(block_number).await?;
+        if let Some(block) = &mut block {
+            block.transactions.convert_to_hashes();
+        }
         Ok(block)
     }
 
@@ -551,7 +547,7 @@ impl ClientFork {
         for (uncle_idx, _) in block.uncles.iter().enumerate() {
             let uncle = match self
                 .provider()
-                .get_uncle(block_number.to::<u64>(), U64::from(uncle_idx))
+                .get_uncle(block_number.to::<u64>().into(), U64::from(uncle_idx))
                 .await?
             {
                 Some(u) => u,
@@ -573,19 +569,12 @@ impl ClientFork {
             BlockTransactions::Uncle => 0,
         };
         let mut transactions = Vec::with_capacity(block_txs_len);
-        for tx in block.transactions.iter() {
-            if let Some(tx) = storage.transactions.get(&tx).cloned() {
+        for tx in block.transactions.hashes() {
+            if let Some(tx) = storage.transactions.get(tx).cloned() {
                 transactions.push(tx);
             }
         }
         block.into_full_block(transactions)
-    }
-
-    /// Converts a full block into a block with only its tx hashes.
-    fn convert_to_tx_only_block(&self, mut block: Block) -> Block {
-        let hashes = block.transactions.iter().collect();
-        block.transactions = BlockTransactions::Hashes(hashes);
-        block
     }
 }
 

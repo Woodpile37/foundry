@@ -24,9 +24,8 @@ ethers-middleware = { workspace = true, features = ["optimism"] }
 
 serde = { workspace = true, optional = true }
 serde_json.workspace = true
-bytes = { version = "1.4" }
+bytes = "1.4"
 open-fastrlp = { version = "0.1.4", optional = true }
-reth-rpc-types = { git = "https://github.com/paradigmxyz/reth/", branch = "main" }
 
 # trie
 hash-db = { version = "0.15", default-features = false }

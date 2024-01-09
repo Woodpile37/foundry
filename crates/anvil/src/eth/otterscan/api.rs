@@ -8,11 +8,11 @@ use crate::eth::{
     EthApi,
 };
 use alloy_primitives::{Address, Bytes, B256, U256, U64};
-use alloy_rpc_types::{Block, BlockId, BlockNumberOrTag as BlockNumber, Transaction};
-use itertools::Itertools;
-use reth_rpc_types::trace::parity::{
-    Action, CallAction, CreateAction, CreateOutput, RewardAction, TraceOutput,
+use alloy_rpc_types::{
+    trace::parity::{Action, CallAction, CreateAction, CreateOutput, RewardAction, TraceOutput},
+    Block, BlockId, BlockNumberOrTag as BlockNumber, Transaction,
 };
+use itertools::Itertools;
 
 impl EthApi {
     /// Otterscan currently requires this endpoint, even though it's not part of the ots_*
@@ -131,7 +131,7 @@ impl EthApi {
     ) -> Result<OtsSearchTransactions> {
         node_info!("ots_searchTransactionsBefore");
 
-        let best = self.backend.best_number().to::<u64>();
+        let best = self.backend.best_number();
         // we go from given block (defaulting to best) down to first block
         // considering only post-fork
         let from = if block_number == 0 { best } else { block_number };
@@ -181,7 +181,7 @@ impl EthApi {
     ) -> Result<OtsSearchTransactions> {
         node_info!("ots_searchTransactionsAfter");
 
-        let best = self.backend.best_number().to::<u64>();
+        let best = self.backend.best_number();
         // we go from the first post-fork block, up to the tip
         let from = if block_number == 0 {
             self.get_fork().map(|f| f.block_number() + 1).unwrap_or(1)
@@ -242,7 +242,7 @@ impl EthApi {
         node_info!("ots_getTransactionBySenderAndNonce");
 
         let from = self.get_fork().map(|f| f.block_number() + 1).unwrap_or_default();
-        let to = self.backend.best_number().to::<u64>();
+        let to = self.backend.best_number();
 
         for n in (from..=to).rev() {
             if let Some(txs) = self.backend.mined_transactions_by_block_number(n.into()).await {
@@ -266,7 +266,7 @@ impl EthApi {
         node_info!("ots_getContractCreator");
 
         let from = self.get_fork().map(|f| f.block_number()).unwrap_or_default();
-        let to = self.backend.best_number().to::<u64>();
+        let to = self.backend.best_number();
 
         // loop in reverse, since we want the latest deploy to the address
         for n in (from..=to).rev() {
