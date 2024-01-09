@@ -8,6 +8,7 @@ extern crate self as foundry_common;
 extern crate tracing;
 
 pub mod abi;
+pub mod alloy_runtime_transport;
 pub mod calc;
 pub mod compile;
 pub mod constants;
@@ -22,6 +23,7 @@ pub mod retry;
 pub mod rpc;
 pub mod runtime_client;
 pub mod selectors;
+pub mod serde_helpers;
 pub mod shell;
 pub mod term;
 pub mod traits;

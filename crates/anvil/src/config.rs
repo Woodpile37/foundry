@@ -15,14 +15,14 @@ use crate::{
     mem::in_memory_db::MemDb,
     FeeManager, Hardfork,
 };
-use alloy_primitives::U64;
+use alloy_primitives::U256;
 use alloy_providers::provider::TempProvider;
 use alloy_rpc_types::BlockNumberOrTag;
 use alloy_transport::TransportError;
 use anvil_server::ServerConfig;
 use ethers::{
     core::k256::ecdsa::SigningKey,
-    prelude::{rand::thread_rng, Wallet, U256},
+    prelude::{rand::thread_rng, Wallet},
     signers::{
         coins_bip39::{English, Mnemonic},
         MnemonicBuilder, Signer,
@@ -30,18 +30,18 @@ use ethers::{
     utils::{format_ether, hex, to_checksum, WEI_IN_ETHER},
 };
 use foundry_common::{
-    provider::alloy::ProviderBuilder, ALCHEMY_FREE_TIER_CUPS, NON_ARCHIVE_NODE_WARNING,
-    REQUEST_TIMEOUT,
+    provider::alloy::ProviderBuilder,
+    types::{ToAlloy, ToEthers},
+    ALCHEMY_FREE_TIER_CUPS, NON_ARCHIVE_NODE_WARNING, REQUEST_TIMEOUT,
 };
 use foundry_config::Config;
 use foundry_evm::{
     constants::DEFAULT_CREATE2_DEPLOYER,
     fork::{BlockchainDb, BlockchainDbMeta, SharedBackend},
     revm,
-    revm::primitives::{BlockEnv, CfgEnv, SpecId, TxEnv, U256 as rU256},
+    revm::primitives::{BlockEnv, CfgEnv, SpecId, TxEnv},
     utils::apply_chain_and_block_specific_env_changes,
 };
-use foundry_utils::types::{ToAlloy, ToEthers};
 use parking_lot::RwLock;
 use serde_json::{json, to_writer, Value};
 use std::{
@@ -172,6 +172,8 @@ pub struct NodeConfig {
     pub transaction_block_keeper: Option<usize>,
     /// Disable the default CREATE2 deployer
     pub disable_default_create2_deployer: bool,
+    /// Enable Optimism deposit transaction
+    pub enable_optimism: bool,
 }
 
 impl NodeConfig {
@@ -193,7 +195,7 @@ Available Accounts
 ==================
 "#
         );
-        let balance = format_ether(self.genesis_balance);
+        let balance = format_ether(self.genesis_balance.to_ethers());
         for (idx, wallet) in self.genesis_accounts.iter().enumerate() {
             let _ = write!(
                 config_string,
@@ -358,7 +360,7 @@ impl NodeConfig {
     /// random, free port by setting it to `0`
     #[doc(hidden)]
     pub fn test() -> Self {
-        Self { enable_tracing: false, silent: true, port: 0, ..Default::default() }
+        Self { enable_tracing: true, silent: true, port: 0, ..Default::default() }
     }
 }
 
@@ -376,7 +378,7 @@ impl Default for NodeConfig {
             genesis_timestamp: None,
             genesis_accounts,
             // 100ETH default balance
-            genesis_balance: WEI_IN_ETHER.saturating_mul(100u64.into()),
+            genesis_balance: WEI_IN_ETHER.to_alloy().saturating_mul(U256::from(100u64)),
             block_time: None,
             no_mining: false,
             port: NODE_PORT,
@@ -409,6 +411,7 @@ impl Default for NodeConfig {
             init_state: None,
             transaction_block_keeper: None,
             disable_default_create2_deployer: false,
+            enable_optimism: false,
         }
     }
 }
@@ -418,12 +421,12 @@ impl NodeConfig {
     pub fn get_base_fee(&self) -> U256 {
         self.base_fee
             .or_else(|| self.genesis.as_ref().and_then(|g| g.base_fee_per_gas))
-            .unwrap_or_else(|| INITIAL_BASE_FEE.into())
+            .unwrap_or_else(|| U256::from(INITIAL_BASE_FEE))
     }
 
     /// Returns the base fee to use
     pub fn get_gas_price(&self) -> U256 {
-        self.gas_price.unwrap_or_else(|| INITIAL_GAS_PRICE.into())
+        self.gas_price.unwrap_or_else(|| U256::from(INITIAL_GAS_PRICE))
     }
 
     /// Returns the base fee to use
@@ -473,9 +476,9 @@ impl NodeConfig {
 
     /// Sets the gas limit
     #[must_use]
-    pub fn with_gas_limit<U: Into<U256>>(mut self, gas_limit: Option<U>) -> Self {
+    pub fn with_gas_limit(mut self, gas_limit: Option<U256>) -> Self {
         if let Some(gas_limit) = gas_limit {
-            self.gas_limit = gas_limit.into();
+            self.gas_limit = gas_limit;
         }
         self
     }
@@ -491,7 +494,7 @@ impl NodeConfig {
 
     /// Sets the gas price
     #[must_use]
-    pub fn with_gas_price<U: Into<U256>>(mut self, gas_price: Option<U>) -> Self {
+    pub fn with_gas_price(mut self, gas_price: Option<U256>) -> Self {
         self.gas_price = gas_price.map(Into::into);
         self
     }
@@ -515,7 +518,7 @@ impl NodeConfig {
 
     /// Sets the base fee
     #[must_use]
-    pub fn with_base_fee<U: Into<U256>>(mut self, base_fee: Option<U>) -> Self {
+    pub fn with_base_fee(mut self, base_fee: Option<U256>) -> Self {
         self.base_fee = base_fee.map(Into::into);
         self
     }
@@ -660,7 +663,7 @@ impl NodeConfig {
 
     /// Sets the `fork_chain_id` to use to fork off local cache from
     #[must_use]
-    pub fn with_fork_chain_id<U: Into<U256>>(mut self, fork_chain_id: Option<U>) -> Self {
+    pub fn with_fork_chain_id(mut self, fork_chain_id: Option<U256>) -> Self {
         self.fork_chain_id = fork_chain_id.map(Into::into);
         self
     }
@@ -787,6 +790,13 @@ impl NodeConfig {
         Config::foundry_block_cache_file(chain_id, block)
     }
 
+    /// Sets whether to enable optimism support
+    #[must_use]
+    pub fn with_optimism(mut self, enable_optimism: bool) -> Self {
+        self.enable_optimism = enable_optimism;
+        self
+    }
+
     /// Configures everything related to env, backend and database and returns the
     /// [Backend](mem::Backend)
     ///
@@ -803,17 +813,22 @@ impl NodeConfig {
         // caller is a contract. So we disable the check by default.
         cfg.disable_eip3607 = true;
         cfg.disable_block_gas_limit = self.disable_block_gas_limit;
+        cfg.optimism = self.enable_optimism;
 
         let mut env = revm::primitives::Env {
             cfg,
             block: BlockEnv {
-                gas_limit: self.gas_limit.to_alloy(),
-                basefee: self.get_base_fee().to_alloy(),
+                gas_limit: self.gas_limit,
+                basefee: self.get_base_fee(),
                 ..Default::default()
             },
             tx: TxEnv { chain_id: self.get_chain_id().into(), ..Default::default() },
         };
-        let fees = FeeManager::new(env.cfg.spec_id, self.get_base_fee(), self.get_gas_price());
+        let fees = FeeManager::new(
+            env.cfg.spec_id,
+            self.get_base_fee().to_ethers(),
+            self.get_gas_price().to_ethers(),
+        );
 
         let (db, fork): (Arc<tokio::sync::RwLock<Box<dyn Db>>>, Option<ClientFork>) =
             if let Some(eth_rpc_url) = self.eth_rpc_url.clone() {
@@ -829,8 +844,8 @@ impl NodeConfig {
 
         let genesis = GenesisConfig {
             timestamp: self.get_genesis_timestamp(),
-            balance: self.genesis_balance.to_alloy(),
-            accounts: self.genesis_accounts.iter().map(|acc| acc.address()).collect(),
+            balance: self.genesis_balance,
+            accounts: self.genesis_accounts.iter().map(|acc| acc.address().to_alloy()).collect(),
             fork_genesis_account_infos: Arc::new(Default::default()),
             genesis_init: self.genesis.clone(),
         };
@@ -934,7 +949,7 @@ impl NodeConfig {
                         .expect("Failed to fetch network chain id")
                         .to::<u64>(),
                 );
-                if chain_id == ethers::types::Chain::Mainnet.into() {
+                if chain_id.to_ethers() == ethers::types::Chain::Mainnet.into() {
                     let hardfork: Hardfork = fork_block_number.into();
                     env.cfg.spec_id = hardfork.into();
                     self.hardfork = Some(hardfork);
@@ -981,17 +996,17 @@ latest block number: {latest_block}"
         // limit is enabled, since there are networks where this is not used and is always
         // `0x0` which would inevitably result in `OutOfGas` errors as soon as the evm is about to record gas, See also <https://github.com/foundry-rs/foundry/issues/3247>
         let gas_limit = if self.disable_block_gas_limit || block.header.gas_limit.is_zero() {
-            rU256::from(u64::MAX)
+            U256::from(u64::MAX)
         } else {
             block.header.gas_limit
         };
 
         env.block = BlockEnv {
-            number: rU256::from(fork_block_number),
+            number: U256::from(fork_block_number),
             timestamp: block.header.timestamp,
             difficulty: block.header.difficulty,
             // ensures prevrandao is set
-            prevrandao: Some(block.header.mix_hash),
+            prevrandao: Some(block.header.mix_hash.unwrap_or_default()),
             gas_limit,
             // Keep previous `coinbase` and `basefee` value
             coinbase: env.block.coinbase,
@@ -1005,7 +1020,7 @@ latest block number: {latest_block}"
         // if not set explicitly we use the base fee of the latest block
         if self.base_fee.is_none() {
             if let Some(base_fee) = block.header.base_fee_per_gas {
-                self.base_fee = Some(base_fee.to_ethers());
+                self.base_fee = Some(base_fee);
                 env.block.basefee = base_fee;
                 // this is the base fee of the current block, but we need the base fee of
                 // the next block
@@ -1022,7 +1037,7 @@ latest block number: {latest_block}"
         // use remote gas price
         if self.gas_price.is_none() {
             if let Ok(gas_price) = provider.get_gas_price().await {
-                self.gas_price = Some(gas_price.to_ethers());
+                self.gas_price = Some(gas_price);
                 fees.set_gas_price(gas_price.to_ethers());
             }
         }
@@ -1033,7 +1048,7 @@ latest block number: {latest_block}"
             chain_id
         } else {
             let chain_id = if let Some(fork_chain_id) = fork_chain_id {
-                fork_chain_id.as_u64()
+                fork_chain_id.to::<u64>()
             } else {
                 provider.get_chain_id().await.unwrap().to::<u64>()
             };

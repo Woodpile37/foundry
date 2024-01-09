@@ -1,6 +1,6 @@
 use super::{
     Cheatcodes, CheatsConfig, ChiselState, CoverageCollector, Debugger, Fuzzer, LogCollector,
-    TracePrinter, Tracer,
+    StackSnapshotType, TracePrinter, TracingInspector, TracingInspectorConfig,
 };
 use alloy_primitives::{Address, Bytes, B256, U256};
 use ethers_core::types::Log;
@@ -192,25 +192,13 @@ pub struct InspectorData {
     pub cheatcodes: Option<Cheatcodes>,
     pub script_wallets: Vec<LocalWallet>,
     pub chisel_state: Option<(Stack, Vec<u8>, InstructionResult)>,
-    pub memory: u64,
-}
-
-#[derive(Clone, Debug)]
-pub struct MemoryInspector {
-    memory: u64,
-}
-
-impl<DB: DatabaseExt> Inspector<DB> for MemoryInspector {
-    fn step(&mut self, interpreter: &mut Interpreter<'_>, _data: &mut EVMData<'_, DB>) {
-        self.memory = self.memory.max(interpreter.shared_memory.len() as u64);
-    }
 }
 
 /// An inspector that calls multiple inspectors in sequence.
 ///
 /// If a call to an inspector returns a value other than [InstructionResult::Continue] (or
 /// equivalent) the remaining inspectors are not called.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct InspectorStack {
     pub cheatcodes: Option<Cheatcodes>,
     pub chisel_state: Option<ChiselState>,
@@ -219,8 +207,7 @@ pub struct InspectorStack {
     pub fuzzer: Option<Fuzzer>,
     pub log_collector: Option<LogCollector>,
     pub printer: Option<TracePrinter>,
-    pub tracer: Option<Tracer>,
-    pub memory: Option<MemoryInspector>,
+    pub tracer: Option<TracingInspector>,
 }
 
 impl InspectorStack {
@@ -231,9 +218,7 @@ impl InspectorStack {
     /// with [`InspectorStack`].
     #[inline]
     pub fn new() -> Self {
-        let mut stack = Self::default();
-        stack.memory = Some(MemoryInspector { memory: 0 });
-        stack
+        Self::default()
     }
 
     /// Set variables from an environment for the relevant inspectors.
@@ -304,7 +289,17 @@ impl InspectorStack {
     /// Set whether to enable the tracer.
     #[inline]
     pub fn tracing(&mut self, yes: bool) {
-        self.tracer = yes.then(Default::default);
+        self.tracer = yes.then(|| {
+            TracingInspector::new(TracingInspectorConfig {
+                record_steps: false,
+                record_memory_snapshots: false,
+                record_stack_snapshots: StackSnapshotType::None,
+                record_state_diff: false,
+                exclude_precompile_calls: false,
+                record_call_return_data: true,
+                record_logs: true,
+            })
+        });
     }
 
     /// Collects all the data gathered during inspection into a single struct.
@@ -319,7 +314,7 @@ impl InspectorStack {
                     cheatcodes.labels.clone().into_iter().map(|l| (l.0, l.1)).collect()
                 })
                 .unwrap_or_default(),
-            traces: self.tracer.map(|tracer| tracer.traces),
+            traces: self.tracer.map(|tracer| tracer.get_traces().clone()),
             debug: self.debugger.map(|debugger| debugger.arena),
             coverage: self.coverage.map(|coverage| coverage.maps),
             script_wallets: self
@@ -329,7 +324,6 @@ impl InspectorStack {
                 .unwrap_or_default(),
             cheatcodes: self.cheatcodes,
             chisel_state: self.chisel_state.and_then(|state| state.state),
-            memory: self.memory.unwrap().memory,
         }
     }
 
@@ -349,7 +343,7 @@ impl InspectorStack {
                 &mut self.coverage,
                 &mut self.log_collector,
                 &mut self.cheatcodes,
-                &mut self.printer,
+                &mut self.printer
             ],
             |inspector| {
                 let (new_status, new_gas, new_retdata) =
@@ -379,7 +373,7 @@ impl<DB: DatabaseExt> Inspector<DB> for InspectorStack {
                 &mut self.tracer,
                 &mut self.log_collector,
                 &mut self.cheatcodes,
-                &mut self.printer,
+                &mut self.printer
             ],
             |inspector| {
                 inspector.initialize_interp(interpreter, data);
@@ -403,8 +397,7 @@ impl<DB: DatabaseExt> Inspector<DB> for InspectorStack {
                 &mut self.coverage,
                 &mut self.log_collector,
                 &mut self.cheatcodes,
-                &mut self.printer,
-                &mut self.memory,
+                &mut self.printer
             ],
             |inspector| {
                 inspector.step(interpreter, data);
@@ -579,7 +572,7 @@ impl<DB: DatabaseExt> Inspector<DB> for InspectorStack {
                 &mut self.log_collector,
                 &mut self.cheatcodes,
                 &mut self.printer,
-                &mut self.chisel_state,
+                &mut self.chisel_state
             ],
             |inspector| {
                 Inspector::<DB>::selfdestruct(inspector, contract, target, value);

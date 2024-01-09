@@ -11,7 +11,7 @@ use ethers::{
         Address, BlockNumber, Transaction, TransactionReceipt, H256, U256,
     },
 };
-use foundry_utils::types::{ToAlloy, ToEthers, to_call_request_from_tx_request};
+use foundry_common::types::{to_call_request_from_tx_request, ToAlloy, ToEthers};
 use futures::{future::join_all, FutureExt, StreamExt};
 use std::{collections::HashSet, sync::Arc, time::Duration};
 use tokio::time::timeout;
@@ -182,7 +182,8 @@ async fn can_reject_too_high_gas_limits() {
     pending.unwrap();
 
     // send transaction with higher gas limit
-    let pending = provider.send_transaction(tx.clone().gas(gas_limit.to_ethers() + 1u64), None).await;
+    let pending =
+        provider.send_transaction(tx.clone().gas(gas_limit.to_ethers() + 1u64), None).await;
 
     assert!(pending.is_err());
     let err = pending.unwrap_err();
@@ -414,7 +415,8 @@ async fn get_blocktimestamp_works() {
 
     assert!(timestamp > U256::one());
 
-    let latest_block = api.block_by_number(alloy_rpc_types::BlockNumberOrTag::Latest).await.unwrap().unwrap();
+    let latest_block =
+        api.block_by_number(alloy_rpc_types::BlockNumberOrTag::Latest).await.unwrap().unwrap();
 
     let timestamp = contract.get_current_block_timestamp().call().await.unwrap();
     assert_eq!(timestamp, latest_block.header.timestamp.to_ethers());
@@ -971,7 +973,7 @@ async fn test_reject_gas_too_low() {
 #[tokio::test(flavor = "multi_thread")]
 async fn can_call_with_high_gas_limit() {
     let (_api, handle) =
-        spawn(NodeConfig::test().with_gas_limit(Some(U256::from(100_000_000)))).await;
+        spawn(NodeConfig::test().with_gas_limit(Some(U256::from(100_000_000).to_alloy()))).await;
     let provider = handle.ethers_http_provider();
 
     let wallet = handle.dev_wallets().next().unwrap();

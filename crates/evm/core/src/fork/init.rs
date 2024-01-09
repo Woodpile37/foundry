@@ -1,9 +1,10 @@
 use crate::utils::apply_chain_and_block_specific_env_changes;
-use alloy_primitives::{Address, U256, U64};
+use alloy_primitives::{Address, U256};
 use alloy_providers::provider::TempProvider;
 use alloy_rpc_types::{Block, BlockNumberOrTag};
 use eyre::WrapErr;
 use foundry_common::NON_ARCHIVE_NODE_WARNING;
+
 use revm::primitives::{BlockEnv, CfgEnv, Env, TxEnv};
 
 /// Initializes a REVM block environment based on a forked
@@ -62,7 +63,7 @@ pub async fn environment<P: TempProvider>(
             timestamp: block.header.timestamp,
             coinbase: block.header.miner,
             difficulty: block.header.difficulty,
-            prevrandao: Some(block.header.mix_hash),
+            prevrandao: Some(block.header.mix_hash.unwrap_or_default()),
             basefee: block.header.base_fee_per_gas.unwrap_or_default(),
             gas_limit: block.header.gas_limit,
             ..Default::default()

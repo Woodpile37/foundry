@@ -1,18 +1,16 @@
 //! Commonly used helpers to construct `Provider`s
 
-use crate::{ALCHEMY_FREE_TIER_CUPS, REQUEST_TIMEOUT};
+use crate::{
+    alloy_runtime_transport::RuntimeTransportBuilder, ALCHEMY_FREE_TIER_CUPS, REQUEST_TIMEOUT,
+};
 use alloy_primitives::U256;
 use alloy_providers::provider::{Provider, TempProvider};
-use alloy_pubsub::PubSubConnect;
-use alloy_transport::{Authorization, BoxTransport, Transport};
-use alloy_transport_http::Http;
-use alloy_transport_ws::WsConnect;
+use alloy_transport::BoxTransport;
 use ethers_middleware::gas_oracle::{GasCategory, GasOracle, Polygon};
-use ethers_providers::{JwtAuth, JwtKey};
 use eyre::{Result, WrapErr};
+use foundry_common::types::ToAlloy;
 use foundry_config::NamedChain;
-use foundry_utils::types::ToAlloy;
-use reqwest::{header::HeaderValue, Url};
+use reqwest::Url;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -37,7 +35,7 @@ pub type RpcUrl = String;
 /// # Examples
 ///
 /// ```
-/// use foundry_common::get_http_provider;
+/// use foundry_common::provider::alloy::get_http_provider;
 ///
 /// let retry_provider = get_http_provider("http://localhost:8545");
 /// ```
@@ -205,7 +203,7 @@ impl ProviderBuilder {
     /// Same as [`Self:build()`] but also retrieves the `chainId` in order to derive an appropriate
     /// interval.
     pub async fn connect(self) -> Result<RetryProvider> {
-        let provider = self.build().await?;
+        let provider = self.build()?;
         // todo: port poll interval hint
         /*if let Some(blocktime) = provider.get_chainid().await.ok().and_then(|id| {
         }) {
@@ -218,56 +216,25 @@ impl ProviderBuilder {
     pub fn build(self) -> Result<RetryProvider> {
         let ProviderBuilder {
             url,
-            chain,
-            max_retry,
-            timeout_retry,
-            initial_backoff,
+            chain: _,
+            max_retry: _,
+            timeout_retry: _,
+            initial_backoff: _,
             timeout,
-            compute_units_per_second,
+            compute_units_per_second: _,
             jwt,
             headers,
         } = self;
         let url = url?;
 
-        // todo: ipc
-        // todo: ws
         // todo: port alchemy compute units logic?
         // todo: provider polling interval
+        let transport_builder = RuntimeTransportBuilder::new(url.clone())
+            .with_timeout(timeout)
+            .with_headers(headers)
+            .with_jwt(jwt);
 
-        // todo: create a `Transport` that wraps the inner transports and e.g. calls connect on the
-        // ws transport -.-
-        let transport = match url.scheme() {
-            "http" | "https" => {
-                let mut client_builder = reqwest::Client::builder().timeout(self.timeout);
-
-                if let Some(jwt) = jwt {
-                    // todo: wrap err
-                    let auth = build_auth(jwt)?;
-
-                    let mut auth_value: HeaderValue = HeaderValue::from_str(&auth.to_string())
-                        .expect("Header should be valid string");
-                    auth_value.set_sensitive(true);
-
-                    let mut headers = reqwest::header::HeaderMap::new();
-                    headers.insert(reqwest::header::AUTHORIZATION, auth_value);
-
-                    client_builder = client_builder.default_headers(headers);
-                };
-
-                // todo: wrap err
-                let client = client_builder.build()?;
-
-                // todo: retry tower layer
-                Http::with_client(client, url).boxed()
-            }
-            "ws" | "wss" => {
-                //WsConnect { url: url.to_string(), auth: None }.into_service().await?.boxed()
-                todo!()
-            }
-            _ => unimplemented!(),
-        };
-
-        Ok(Provider::new(transport))
+        Ok(Provider::new(transport_builder.build().boxed()))
     }
 }
 
@@ -324,20 +291,6 @@ fn resolve_path(path: &Path) -> Result<PathBuf, ()> {
         }
     }
     Err(())
-}
-
-// todo: docs
-fn build_auth(jwt: String) -> eyre::Result<Authorization> {
-    // Decode jwt from hex, then generate claims (iat with current timestamp)
-    let jwt = hex::decode(jwt)?;
-    let secret = JwtKey::from_slice(&jwt).map_err(|err| eyre::eyre!("Invalid JWT: {}", err))?;
-    let auth = JwtAuth::new(secret, None, None);
-    let token = auth.generate_token()?;
-
-    // Essentially unrolled ethers-rs new_with_auth to accomodate the custom timeout
-    let auth = Authorization::Bearer(token);
-
-    Ok(auth)
 }
 
 #[cfg(test)]

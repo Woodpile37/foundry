@@ -14,9 +14,9 @@ use foundry_evm::{
     backend::{DatabaseResult, StateSnapshot},
     fork::BlockchainDb,
 };
-use tracing::{trace, warn};
 
 // reexport for convenience
+use foundry_evm::backend::RevertSnapshotAction;
 pub use foundry_evm::{backend::MemDb, revm::db::DatabaseRef};
 
 impl Db for MemDb {
@@ -67,8 +67,11 @@ impl Db for MemDb {
         id
     }
 
-    fn revert(&mut self, id: U256) -> bool {
+    fn revert(&mut self, id: U256, action: RevertSnapshotAction) -> bool {
         if let Some(snapshot) = self.snapshots.remove(id) {
+            if action.is_keep() {
+                self.snapshots.insert_at(snapshot.clone(), id);
+            }
             self.inner = snapshot;
             trace!(target: "backend::memdb", "Reverted snapshot {}", id);
             true

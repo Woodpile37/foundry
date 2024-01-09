@@ -23,8 +23,13 @@ use ethers::{
     signers::Signer,
     types::{Address, U256},
 };
-use foundry_common::provider::alloy::{ProviderBuilder, RetryProvider};
-use foundry_common::provider::ethers::{ProviderBuilder as EthersProviderBuilder, RetryProvider as EthersRetryProvider};
+use foundry_common::{
+    provider::{
+        alloy::{ProviderBuilder, RetryProvider},
+        ethers::{ProviderBuilder as EthersProviderBuilder, RetryProvider as EthersRetryProvider},
+    },
+    types::ToEthers,
+};
 use foundry_evm::revm;
 use futures::{FutureExt, TryFutureExt};
 use parking_lot::Mutex;
@@ -35,7 +40,6 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
-    time::Duration,
 };
 use tokio::{
     runtime::Handle,
@@ -277,7 +281,9 @@ impl NodeHandle {
     }
 
     pub fn ethers_http_provider(&self) -> EthersRetryProvider {
-        EthersProviderBuilder::new(&self.http_endpoint()).build().expect("failed to build ethers HTTP provider")
+        EthersProviderBuilder::new(&self.http_endpoint())
+            .build()
+            .expect("failed to build ethers HTTP provider")
     }
 
     /// Constructs a [`RetryProvider`] for this handle's WS endpoint.
@@ -286,7 +292,9 @@ impl NodeHandle {
     }
 
     pub fn ethers_ws_provider(&self) -> EthersRetryProvider {
-        EthersProviderBuilder::new(&self.ws_endpoint()).build().expect("failed to build ethers WS provider")
+        EthersProviderBuilder::new(&self.ws_endpoint())
+            .build()
+            .expect("failed to build ethers WS provider")
     }
 
     /// Constructs a [`RetryProvider`] for this handle's IPC endpoint, if any.
@@ -315,12 +323,12 @@ impl NodeHandle {
 
     /// Native token balance of every genesis account in the genesis block
     pub fn genesis_balance(&self) -> U256 {
-        self.config.genesis_balance
+        self.config.genesis_balance.to_ethers()
     }
 
     /// Default gas price for all txs
     pub fn gas_price(&self) -> U256 {
-        self.config.get_gas_price()
+        self.config.get_gas_price().to_ethers()
     }
 
     /// Returns the shutdown signal

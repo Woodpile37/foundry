@@ -8,6 +8,7 @@ use alloy_providers::provider::Provider;
 use alloy_transport::BoxTransport;
 use ethers::types::BlockNumber;
 use foundry_common::provider::alloy::ProviderBuilder;
+
 use foundry_config::Config;
 use futures::{
     channel::mpsc::{channel, Receiver, Sender},
@@ -180,7 +181,7 @@ enum ForkTask {
 }
 
 /// The type that manages connections in the background
-#[must_use = "MultiForkHandler does nothing unless polled."]
+#[must_use = "futures do nothing unless polled"]
 pub struct MultiForkHandler {
     /// Incoming requests from the `MultiFork`.
     incoming: Fuse<Receiver<Request>>,
@@ -374,8 +375,8 @@ impl Future for MultiForkHandler {
             .flush_cache_interval
             .as_mut()
             .map(|interval| interval.poll_tick(cx).is_ready())
-            .unwrap_or_default()
-            && !pin.forks.is_empty()
+            .unwrap_or_default() &&
+            !pin.forks.is_empty()
         {
             trace!(target: "fork::multi", "tick flushing caches");
             let forks = pin.forks.values().map(|f| f.backend.clone()).collect::<Vec<_>>();
@@ -462,7 +463,7 @@ async fn create_fork(mut fork: CreateFork) -> eyre::Result<(CreatedFork, Handler
 
     // we need to use the block number from the block because the env's number can be different on
     // some L2s (e.g. Arbitrum).
-    let number = block.header.number.unwrap_or_else(|| meta.block_env.number);
+    let number = block.header.number.unwrap_or(meta.block_env.number);
 
     // determine the cache path if caching is enabled
     let cache_path = if fork.enable_caching {

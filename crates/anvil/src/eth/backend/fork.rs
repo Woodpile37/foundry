@@ -4,23 +4,23 @@ use crate::eth::{backend::db::Db, error::BlockchainError};
 use alloy_primitives::{Address, Bytes, StorageKey, StorageValue, B256, U256, U64};
 use alloy_providers::provider::TempProvider;
 use alloy_rpc_types::{
-    trace::{GethDebugTracingOptions, GethTrace, LocalizedTransactionTrace as Trace},
+    trace::{GethDebugTracingOptions, GethTrace},
     AccessListWithGasUsed, Block, BlockId, BlockNumberOrTag as BlockNumber, BlockTransactions,
     CallRequest, EIP1186AccountProofResponse, FeeHistory, Filter, Log, Transaction,
     TransactionReceipt,
 };
 use alloy_transport::TransportError;
-use ethers::providers::ProviderError;
-use eyre::Context;
-use foundry_common::provider::alloy::{ProviderBuilder, RetryProvider};
+use foundry_common::{
+    provider::alloy::{ProviderBuilder, RetryProvider},
+    types::ToReth,
+};
 use parking_lot::{
     lock_api::{RwLockReadGuard, RwLockWriteGuard},
     RawRwLock, RwLock,
 };
+use reth_rpc_types::trace::parity::LocalizedTransactionTrace as Trace;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock as AsyncRwLock;
-
-use super::mem::storage::Blockchain;
 
 /// Represents a fork of a remote client
 ///
@@ -65,7 +65,7 @@ impl ClientFork {
             self.config.write().update_url(url)?;
             let override_chain_id = self.config.read().override_chain_id;
             let chain_id = if let Some(chain_id) = override_chain_id {
-                chain_id.into()
+                chain_id
             } else {
                 self.provider().get_chain_id().await?.to::<u64>()
             };
@@ -243,7 +243,7 @@ impl ClientFork {
         number: Option<BlockNumber>,
     ) -> Result<StorageValue, TransportError> {
         let index = B256::from(index);
-        self.provider().get_storage_at(address, index.into(), number.map(Into::into)).await
+        self.provider().get_storage_at(address, index, number.map(Into::into)).await
     }
 
     pub async fn logs(&self, filter: &Filter) -> Result<Vec<Log>, TransportError> {
@@ -357,7 +357,7 @@ impl ClientFork {
 
         let mut storage = self.storage_write();
         storage.transactions.insert(hash, tx.clone());
-        return Ok(Some(tx));
+        Ok(Some(tx))
     }
 
     pub async fn trace_transaction(&self, hash: B256) -> Result<Vec<Trace>, TransportError> {
@@ -365,7 +365,13 @@ impl ClientFork {
             return Ok(traces);
         }
 
-        let traces = self.provider().trace_transaction(hash).await?;
+        let traces = self
+            .provider()
+            .trace_transaction(hash)
+            .await?
+            .into_iter()
+            .map(ToReth::to_reth)
+            .collect::<Vec<_>>();
 
         let mut storage = self.storage_write();
         storage.transaction_traces.insert(hash, traces.clone());
@@ -395,7 +401,13 @@ impl ClientFork {
             return Ok(traces);
         }
 
-        let traces = self.provider().trace_block(number.into()).await?;
+        let traces = self
+            .provider()
+            .trace_block(number.into())
+            .await?
+            .into_iter()
+            .map(ToReth::to_reth)
+            .collect::<Vec<_>>();
 
         let mut storage = self.storage_write();
         storage.block_traces.insert(number, traces.clone());
@@ -422,9 +434,15 @@ impl ClientFork {
 
     pub async fn block_by_hash(&self, hash: B256) -> Result<Option<Block>, TransportError> {
         if let Some(block) = self.storage_read().blocks.get(&hash).cloned() {
-            return Ok(Some(block));
+            return Ok(Some(self.convert_to_tx_only_block(block)));
         }
-        let block = self.fetch_full_block(hash).await?.map(Into::into);
+
+        let block = self
+            .fetch_full_block(hash)
+            .await?
+            .map(Into::into)
+            .map(|b| self.convert_to_tx_only_block(b));
+
         Ok(block)
     }
 
@@ -446,10 +464,14 @@ impl ClientFork {
             .copied()
             .and_then(|hash| self.storage_read().blocks.get(&hash).cloned())
         {
-            return Ok(Some(block));
+            return Ok(Some(self.convert_to_tx_only_block(block)));
         }
 
-        let block = self.fetch_full_block(block_number).await?.map(Into::into);
+        let block = self
+            .fetch_full_block(block_number)
+            .await?
+            .map(Into::into)
+            .map(|b| self.convert_to_tx_only_block(b));
         Ok(block)
     }
 
@@ -481,11 +503,11 @@ impl ClientFork {
             // also insert all transactions
             let block_txs = match block.clone().transactions {
                 BlockTransactions::Full(txs) => txs,
-                _ => panic!("expected full block. This is a bug."),
+                _ => vec![],
             };
             storage.transactions.extend(block_txs.iter().map(|tx| (tx.hash, tx.clone())));
             storage.hashes.insert(block_number, hash);
-            storage.blocks.insert(hash, block.clone().into());
+            storage.blocks.insert(hash, block.clone());
             return Ok(Some(block));
         }
 
@@ -519,18 +541,19 @@ impl ClientFork {
         block: Block,
         index: usize,
     ) -> Result<Option<Block>, TransportError> {
-        let block_hash = block
-            .header
-            .hash
-            // TODO: Nicer way to make a custom error from a TransportError
-            .expect("Missing block hash");
+        let block_hash = block.header.hash.expect("Missing block hash");
+        let block_number = block.header.number.expect("Missing block number");
         if let Some(uncles) = self.storage_read().uncles.get(&block_hash) {
             return Ok(uncles.get(index).cloned());
         }
 
         let mut uncles = Vec::with_capacity(block.uncles.len());
         for (uncle_idx, _) in block.uncles.iter().enumerate() {
-            let uncle = match self.provider().get_uncle(block_hash, U64::from(uncle_idx)).await? {
+            let uncle = match self
+                .provider()
+                .get_uncle(block_number.to::<u64>(), U64::from(uncle_idx))
+                .await?
+            {
                 Some(u) => u,
                 None => return Ok(None),
             };
@@ -556,6 +579,13 @@ impl ClientFork {
             }
         }
         block.into_full_block(transactions)
+    }
+
+    /// Converts a full block into a block with only its tx hashes.
+    fn convert_to_tx_only_block(&self, mut block: Block) -> Block {
+        let hashes = block.transactions.iter().collect();
+        block.transactions = BlockTransactions::Hashes(hashes);
+        block
     }
 }
 

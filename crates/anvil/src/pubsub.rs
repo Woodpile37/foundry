@@ -2,7 +2,7 @@ use crate::{
     eth::{backend::notifications::NewBlockNotifications, error::to_rpc_result},
     StorageInfo,
 };
-use alloy_primitives::{TxHash, B256, U256, U64};
+use alloy_primitives::{TxHash, B256, U256};
 use alloy_rpc_types::{pubsub::SubscriptionResult, FilteredParams, Log as AlloyLog};
 use anvil_core::eth::{
     block::Block,
@@ -10,7 +10,7 @@ use anvil_core::eth::{
     subscription::SubscriptionId,
 };
 use anvil_rpc::{request::Version, response::ResponseResult};
-use foundry_utils::types::ToAlloy;
+use foundry_common::types::ToAlloy;
 use futures::{channel::mpsc::Receiver, ready, Stream, StreamExt};
 use serde::Serialize;
 use std::{
@@ -66,7 +66,7 @@ impl LogsSubscription {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize)]
 pub struct EthSubscriptionResponse {
     jsonrpc: Version,
     method: &'static str,
@@ -82,7 +82,7 @@ impl EthSubscriptionResponse {
 }
 
 /// Represents the `params` field of an `eth_subscription` event
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize)]
 pub struct EthSubscriptionParams {
     subscription: SubscriptionId,
     #[serde(flatten)]
@@ -168,10 +168,10 @@ pub fn filter_logs(
         };
         if params.filter.is_some() {
             let block_number = block.header.number.as_u64();
-            if !params.filter_block_range(block_number)
-                || !params.filter_block_hash(block_hash)
-                || !params.filter_address(&log)
-                || !params.filter_topics(&log)
+            if !params.filter_block_range(block_number) ||
+                !params.filter_block_hash(block_hash) ||
+                !params.filter_address(&log) ||
+                !params.filter_topics(&log)
             {
                 return false;
             }
@@ -190,7 +190,7 @@ pub fn filter_logs(
         } else {
             None
         };
-        for (transaction_log_index, log) in receipt_logs.into_iter().enumerate() {
+        for log in receipt_logs.into_iter() {
             if add_log(block_hash.to_alloy(), &log, &block, filter) {
                 logs.push(AlloyLog {
                     address: log.address.to_alloy(),

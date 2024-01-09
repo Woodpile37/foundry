@@ -5,6 +5,7 @@ use alloy_primitives::{Address, Bytes, B256, U256 as rU256};
 use alloy_rpc_types::state::StateOverride;
 use anvil_core::eth::trie::RefSecTrieDBMut;
 use ethers::utils::{rlp, rlp::RlpStream};
+use foundry_common::types::ToEthers;
 use foundry_evm::{
     backend::DatabaseError,
     hashbrown::HashMap as Map,
@@ -13,7 +14,6 @@ use foundry_evm::{
         primitives::{AccountInfo, Bytecode, Log},
     },
 };
-use foundry_utils::types::ToEthers;
 use memory_db::HashKey;
 use trie_db::TrieMut;
 
@@ -143,13 +143,13 @@ where
                     *account,
                     new_account_state
                         .iter()
-                        .map(|(key, value)| ((*key).into(), ((*value).into())))
+                        .map(|(key, value)| ((*key).into(), (*value)))
                         .collect(),
                 )?;
             }
             (None, Some(account_state_diff)) => {
                 for (key, value) in account_state_diff.iter() {
-                    cache_db.insert_account_storage(*account, (*key).into(), (*value).into())?;
+                    cache_db.insert_account_storage(*account, (*key).into(), *value)?;
                 }
             }
         };
