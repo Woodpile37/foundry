@@ -23,7 +23,8 @@ use ethers::{
     signers::Signer,
     types::{Address, U256},
 };
-use foundry_common::{ProviderBuilder, RetryProvider};
+use foundry_common::provider::alloy::{ProviderBuilder, RetryProvider};
+use foundry_common::provider::ethers::{ProviderBuilder as EthersProviderBuilder, RetryProvider as EthersRetryProvider};
 use foundry_evm::revm;
 use futures::{FutureExt, TryFutureExt};
 use parking_lot::Mutex;
@@ -271,10 +272,12 @@ impl NodeHandle {
 
     /// Constructs a [`RetryProvider`] for this handle's HTTP endpoint.
     pub fn http_provider(&self) -> RetryProvider {
-        ProviderBuilder::new(&self.http_endpoint())
-            .build()
-            .expect("failed to build HTTP provider")
-            .interval(Duration::from_millis(500))
+        ProviderBuilder::new(&self.http_endpoint()).build().expect("failed to build HTTP provider")
+        // .interval(Duration::from_millis(500))
+    }
+
+    pub fn ethers_http_provider(&self) -> EthersRetryProvider {
+        EthersProviderBuilder::new(&self.http_endpoint()).build().expect("failed to build ethers HTTP provider")
     }
 
     /// Constructs a [`RetryProvider`] for this handle's WS endpoint.
@@ -282,9 +285,17 @@ impl NodeHandle {
         ProviderBuilder::new(&self.ws_endpoint()).build().expect("failed to build WS provider")
     }
 
+    pub fn ethers_ws_provider(&self) -> EthersRetryProvider {
+        EthersProviderBuilder::new(&self.ws_endpoint()).build().expect("failed to build ethers WS provider")
+    }
+
     /// Constructs a [`RetryProvider`] for this handle's IPC endpoint, if any.
     pub fn ipc_provider(&self) -> Option<RetryProvider> {
         ProviderBuilder::new(&self.config.get_ipc_path()?).build().ok()
+    }
+
+    pub fn ethers_ipc_provider(&self) -> Option<EthersRetryProvider> {
+        EthersProviderBuilder::new(&self.config.get_ipc_path()?).build().ok()
     }
 
     /// Signer accounts that can sign messages/transactions from the EVM node
@@ -353,7 +364,7 @@ impl Future for NodeHandle {
         // poll the ipc task
         if let Some(mut ipc) = pin.ipc_task.take() {
             if let Poll::Ready(res) = ipc.poll_unpin(cx) {
-                return Poll::Ready(res.map(|res| res.map_err(NodeError::from)))
+                return Poll::Ready(res.map(|res| res.map_err(NodeError::from)));
             } else {
                 pin.ipc_task = Some(ipc);
             }
@@ -361,13 +372,13 @@ impl Future for NodeHandle {
 
         // poll the node service task
         if let Poll::Ready(res) = pin.node_service.poll_unpin(cx) {
-            return Poll::Ready(res)
+            return Poll::Ready(res);
         }
 
         // poll the axum server handles
         for server in pin.servers.iter_mut() {
             if let Poll::Ready(res) = server.poll_unpin(cx) {
-                return Poll::Ready(res)
+                return Poll::Ready(res);
             }
         }
 

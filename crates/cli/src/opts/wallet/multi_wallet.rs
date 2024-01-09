@@ -6,8 +6,9 @@ use ethers_signers::{
     AwsSigner, HDPath as LedgerHDPath, Ledger, LocalWallet, Signer, Trezor, TrezorHDPath,
 };
 use eyre::{Context, ContextCompat, Result};
-use foundry_common::{types::ToAlloy, RetryProvider};
+use foundry_common::provider::ethers::RetryProvider;
 use foundry_config::Config;
+use foundry_utils::types::ToAlloy;
 use itertools::izip;
 use rusoto_core::{
     credential::ChainProvider as AwsChainProvider, region::Region as AwsRegion,
@@ -70,7 +71,7 @@ macro_rules! create_hw_wallets {
 /// 5. Private Keys (cleartext in CLI)
 /// 6. Private Keys (interactively via secure prompt)
 /// 7. AWS KMS
-#[derive(Clone, Debug, Default, Serialize, Parser)]
+#[derive(Parser, Debug, Clone, Serialize, Default)]
 #[clap(next_help_heading = "Wallet options", about = None, long_about = None)]
 pub struct MultiWallet {
     /// The sender accounts.
@@ -97,7 +98,12 @@ pub struct MultiWallet {
     pub interactives: u32,
 
     /// Use the provided private keys.
-    #[clap(long, help_heading = "Wallet options - raw", value_name = "RAW_PRIVATE_KEYS")]
+    #[clap(
+        long,
+        help_heading = "Wallet options - raw",
+        value_name = "RAW_PRIVATE_KEYS",
+        value_parser = foundry_common::clap_helpers::strip_0x_prefix,
+    )]
     pub private_keys: Option<Vec<String>>,
 
     /// Use the provided private key.
@@ -105,7 +111,8 @@ pub struct MultiWallet {
         long,
         help_heading = "Wallet options - raw",
         conflicts_with = "private_keys",
-        value_name = "RAW_PRIVATE_KEY"
+        value_name = "RAW_PRIVATE_KEY",
+        value_parser = foundry_common::clap_helpers::strip_0x_prefix,
     )]
     pub private_key: Option<String>,
 
@@ -239,7 +246,7 @@ impl MultiWallet {
                     local_wallets.insert(address.to_alloy(), signer);
 
                     if addresses.is_empty() {
-                        return Ok(local_wallets)
+                        return Ok(local_wallets);
                     }
                 } else {
                     // Just to show on error.
@@ -270,7 +277,7 @@ impl MultiWallet {
             for _ in 0..self.interactives {
                 wallets.push(self.get_from_interactive()?);
             }
-            return Ok(Some(wallets))
+            return Ok(Some(wallets));
         }
         Ok(None)
     }
@@ -281,7 +288,7 @@ impl MultiWallet {
             for private_key in private_keys.iter() {
                 wallets.push(self.get_from_private_key(private_key.trim())?);
             }
-            return Ok(Some(wallets))
+            return Ok(Some(wallets));
         }
         Ok(None)
     }
@@ -317,7 +324,7 @@ impl MultiWallet {
                 let wallet = self.get_from_keystore(Some(&path), passwords_iter.next().as_ref(), password_files_iter.next().as_ref())?.wrap_err("Keystore paths do not have the same length as provided passwords or password files.")?;
                 wallets.push(wallet);
             }
-            return Ok(Some(wallets))
+            return Ok(Some(wallets));
         }
         Ok(None)
     }
@@ -352,7 +359,7 @@ impl MultiWallet {
                     mnemonic_index,
                 )?)
             }
-            return Ok(Some(wallets))
+            return Ok(Some(wallets));
         }
         Ok(None)
     }
@@ -369,7 +376,7 @@ impl MultiWallet {
             }
 
             create_hw_wallets!(args, chain_id, get_from_ledger, wallets);
-            return Ok(Some(wallets))
+            return Ok(Some(wallets));
         }
         Ok(None)
     }
@@ -377,7 +384,7 @@ impl MultiWallet {
     pub async fn trezors(&self, chain_id: u64) -> Result<Option<Vec<Trezor>>> {
         if self.trezor {
             create_hw_wallets!(self, chain_id, get_from_trezor, wallets);
-            return Ok(Some(wallets))
+            return Ok(Some(wallets));
         }
         Ok(None)
     }
@@ -399,7 +406,7 @@ impl MultiWallet {
                 wallets.push(aws_signer)
             }
 
-            return Ok(Some(wallets))
+            return Ok(Some(wallets));
         }
         Ok(None)
     }

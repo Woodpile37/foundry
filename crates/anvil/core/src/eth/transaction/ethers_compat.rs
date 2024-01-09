@@ -1,20 +1,115 @@
 //! ethers compatibility, this is mainly necessary so we can use all of `ethers` signers
 
 use super::EthTransactionRequest;
-use crate::eth::transaction::{
-    DepositTransactionRequest, EIP1559TransactionRequest, EIP2930TransactionRequest,
-    LegacyTransactionRequest, MaybeImpersonatedTransaction, TypedTransaction,
-    TypedTransactionRequest,
+use crate::eth::{
+    proof::AccountProof,
+    transaction::{
+        EIP1559TransactionRequest, EIP2930TransactionRequest, LegacyTransactionRequest,
+        MaybeImpersonatedTransaction, TypedTransaction, TypedTransactionRequest,
+    },
+};
+use alloy_primitives::{U128 as rU128, U256 as rU256, U64 as rU64};
+use alloy_rpc_types::{
+    AccessList as AlloyAccessList, AccessListItem as AlloyAccessListItem, CallRequest,
+    EIP1186StorageProof, Signature, Transaction as AlloyTransaction,
+    TransactionRequest as AlloyTransactionRequest,
 };
 use ethers_core::types::{
     transaction::{
-        eip2718::TypedTransaction as EthersTypedTransactionRequest, optimism::DepositTransaction,
+        eip2718::TypedTransaction as EthersTypedTransactionRequest,
+        eip2930::{AccessList, AccessListItem},
     },
-    Address, Eip1559TransactionRequest as EthersEip1559TransactionRequest,
-    Eip2930TransactionRequest as EthersEip2930TransactionRequest, NameOrAddress,
+    Address, BigEndianHash, Eip1559TransactionRequest as EthersEip1559TransactionRequest,
+    Eip2930TransactionRequest as EthersEip2930TransactionRequest, NameOrAddress, StorageProof,
     Transaction as EthersTransaction, TransactionRequest as EthersLegacyTransactionRequest,
     TransactionRequest, H256, U256, U64,
 };
+use foundry_utils::types::{ToAlloy, ToEthers};
+
+pub fn to_alloy_proof(proof: AccountProof) -> alloy_rpc_types::EIP1186AccountProofResponse {
+    alloy_rpc_types::EIP1186AccountProofResponse {
+        address: proof.address.to_alloy(),
+        account_proof: proof.account_proof.into_iter().map(|b| b.0.into()).collect(),
+        balance: proof.balance.to_alloy(),
+        code_hash: proof.code_hash.to_alloy(),
+        nonce: proof.nonce.to_alloy().to::<rU64>(),
+        storage_hash: proof.storage_hash.to_alloy(),
+        storage_proof: proof.storage_proof.iter().map(to_alloy_storage_proof).collect(),
+    }
+}
+
+pub fn to_alloy_storage_proof(proof: &StorageProof) -> alloy_rpc_types::EIP1186StorageProof {
+    alloy_rpc_types::EIP1186StorageProof {
+        key: rU256::from_be_bytes(proof.key.to_alloy().0).into(),
+        proof: proof.proof.iter().map(|b| b.clone().0.into()).collect(),
+        value: proof.value.to_alloy(),
+    }
+}
+
+pub fn to_internal_tx_request(request: &AlloyTransactionRequest) -> EthTransactionRequest {
+    EthTransactionRequest {
+        from: request.from.map(|a| a.to_ethers()),
+        to: request.to.map(|a| a.to_ethers()),
+        gas_price: request.gas_price.map(|g| alloy_primitives::U256::from(g).to_ethers()),
+        max_fee_per_gas: request
+            .max_fee_per_gas
+            .map(|g| alloy_primitives::U256::from(g).to_ethers()),
+        max_priority_fee_per_gas: request
+            .max_priority_fee_per_gas
+            .map(|g| alloy_primitives::U256::from(g).to_ethers()),
+        gas: request.gas.map(|g| g.to_ethers()),
+        value: request.value.map(|v| v.to_ethers()),
+        data: request.data.clone().map(|b| b.clone().0.into()),
+        nonce: request.nonce.map(|n| n.to::<u64>().into()),
+        chain_id: None,
+        access_list: request.access_list.clone().map(|a| to_ethers_access_list(a.clone()).0),
+        transaction_type: request.transaction_type.map(|t| t.to::<u64>().into()),
+    }
+}
+
+pub fn call_to_internal_tx_request(request: &CallRequest) -> EthTransactionRequest {
+    EthTransactionRequest {
+        from: request.from.map(|a| a.to_ethers()),
+        to: request.to.map(|a| a.to_ethers()),
+        gas_price: request.gas_price.map(|g| alloy_primitives::U256::from(g).to_ethers()),
+        max_fee_per_gas: request
+            .max_fee_per_gas
+            .map(|g| alloy_primitives::U256::from(g).to_ethers()),
+        max_priority_fee_per_gas: request
+            .max_priority_fee_per_gas
+            .map(|g| alloy_primitives::U256::from(g).to_ethers()),
+        gas: request.gas.map(|g| g.to_ethers()),
+        value: request.value.map(|v| v.to_ethers()),
+        data: request.input.unique_input().unwrap().map(|b| b.clone().0.into()),
+        nonce: request.nonce.map(|n| n.to::<u64>().into()),
+        chain_id: request.chain_id.map(|c| c.to::<u64>().into()),
+        access_list: request.access_list.clone().map(|a| to_ethers_access_list(a.clone()).0),
+        transaction_type: request.transaction_type.map(|t| t.to::<u64>().into()),
+    }
+}
+
+pub fn to_ethers_access_list(access_list: AlloyAccessList) -> AccessList {
+    AccessList(
+        access_list
+            .0
+            .into_iter()
+            .map(|item| AccessListItem {
+                address: item.address.to_ethers(),
+                storage_keys: item
+                    .storage_keys
+                    .into_iter()
+                    .map(|k| {
+                        BigEndianHash::from_uint(&U256::from_big_endian(k.to_ethers().as_bytes()))
+                    })
+                    .collect(),
+            })
+            .collect(),
+    )
+}
+
+pub fn from_ethers_access_list(access_list: AccessList) -> AlloyAccessList {
+    AlloyAccessList(access_list.0.into_iter().map(ToAlloy::to_alloy).collect())
+}
 
 impl From<TypedTransactionRequest> for EthersTypedTransactionRequest {
     fn from(tx: TypedTransactionRequest) -> Self {
@@ -90,33 +185,6 @@ impl From<TypedTransactionRequest> for EthersTypedTransactionRequest {
                     chain_id: Some(chain_id.into()),
                 })
             }
-            TypedTransactionRequest::Deposit(tx) => {
-                let DepositTransactionRequest {
-                    source_hash,
-                    from,
-                    kind,
-                    mint,
-                    value,
-                    gas_limit,
-                    is_system_tx,
-                    input,
-                } = tx;
-                EthersTypedTransactionRequest::DepositTransaction(DepositTransaction {
-                    tx: TransactionRequest {
-                        from: Some(from),
-                        to: kind.as_call().cloned().map(Into::into),
-                        gas: Some(gas_limit),
-                        value: Some(value),
-                        data: Some(input),
-                        gas_price: Some(0.into()),
-                        nonce: Some(0.into()),
-                        chain_id: None,
-                    },
-                    source_hash,
-                    mint: Some(mint),
-                    is_system_tx,
-                })
-            }
         }
     }
 }
@@ -147,9 +215,6 @@ fn to_ethers_transaction_with_hash_and_sender(
             s: t.signature.s,
             access_list: None,
             transaction_type: None,
-            source_hash: H256::zero(),
-            mint: None,
-            is_system_tx: false,
             other: Default::default(),
         },
         TypedTransaction::EIP2930(t) => EthersTransaction {
@@ -172,9 +237,6 @@ fn to_ethers_transaction_with_hash_and_sender(
             s: U256::from(t.s.as_bytes()),
             access_list: Some(t.access_list),
             transaction_type: Some(1u64.into()),
-            source_hash: H256::zero(),
-            mint: None,
-            is_system_tx: false,
             other: Default::default(),
         },
         TypedTransaction::EIP1559(t) => EthersTransaction {
@@ -197,35 +259,97 @@ fn to_ethers_transaction_with_hash_and_sender(
             s: U256::from(t.s.as_bytes()),
             access_list: Some(t.access_list),
             transaction_type: Some(2u64.into()),
-            source_hash: H256::zero(),
-            mint: None,
-            is_system_tx: false,
             other: Default::default(),
         },
-        TypedTransaction::Deposit(t) => EthersTransaction {
-            hash,
-            nonce: t.nonce,
+    }
+}
+
+fn to_alloy_transaction_with_hash_and_sender(
+    transaction: TypedTransaction,
+    hash: H256,
+    from: Address,
+) -> AlloyTransaction {
+    match transaction {
+        TypedTransaction::Legacy(t) => AlloyTransaction {
+            hash: hash.to_alloy(),
+            nonce: t.nonce.to_alloy().to::<rU64>(),
             block_hash: None,
             block_number: None,
             transaction_index: None,
-            from,
+            from: from.to_alloy(),
             to: None,
-            value: t.value,
-            gas_price: Some(0.into()),
-            max_fee_per_gas: Some(0.into()),
-            max_priority_fee_per_gas: Some(0.into()),
-            gas: t.gas_limit,
-            input: t.input.clone(),
-            chain_id: t.chain_id().map(Into::into),
-            v: 0.into(),
-            r: 0.into(),
-            s: 0.into(),
+            value: t.value.to_alloy(),
+            gas_price: Some(t.gas_price.to_alloy().to::<rU128>()),
+            max_fee_per_gas: Some(t.gas_price.to_alloy().to::<rU128>()),
+            max_priority_fee_per_gas: Some(t.gas_price.to_alloy().to::<rU128>()),
+            gas: t.gas_limit.to_alloy(),
+            input: t.input.clone().0.into(),
+            chain_id: t.chain_id().map(|c| rU64::from(c)),
+            signature: Some(Signature {
+                r: t.signature.r.to_alloy(),
+                s: t.signature.s.to_alloy(),
+                v: rU256::from(t.signature.v),
+                y_parity: None,
+            }),
             access_list: None,
-            transaction_type: Some(126u64.into()),
-            source_hash: t.source_hash,
-            mint: Some(t.mint),
-            is_system_tx: t.is_system_tx,
-            other: Default::default(),
+            transaction_type: None,
+            max_fee_per_blob_gas: None,
+            blob_versioned_hashes: vec![],
+            ..Default::default()
+        },
+        TypedTransaction::EIP2930(t) => AlloyTransaction {
+            hash: hash.to_alloy(),
+            nonce: t.nonce.to_alloy().to::<rU64>(),
+            block_hash: None,
+            block_number: None,
+            transaction_index: None,
+            from: from.to_alloy(),
+            to: None,
+            value: t.value.to_alloy(),
+            gas_price: Some(t.gas_price.to_alloy().to::<rU128>()),
+            max_fee_per_gas: Some(t.gas_price.to_alloy().to::<rU128>()),
+            max_priority_fee_per_gas: Some(t.gas_price.to_alloy().to::<rU128>()),
+            gas: t.gas_limit.to_alloy(),
+            input: t.input.clone().0.into(),
+            chain_id: Some(rU64::from(t.chain_id)),
+            signature: Some(Signature {
+                r: rU256::from_be_bytes(t.r.to_alloy().0),
+                s: rU256::from_be_bytes(t.s.to_alloy().0),
+                v: rU256::from(t.odd_y_parity as u8),
+                y_parity: Some(t.odd_y_parity.into()),
+            }),
+            access_list: Some(from_ethers_access_list(t.access_list).0),
+            transaction_type: Some(rU64::from(1)),
+            max_fee_per_blob_gas: None,
+            blob_versioned_hashes: vec![],
+            ..Default::default()
+        },
+        TypedTransaction::EIP1559(t) => AlloyTransaction {
+            hash: hash.to_alloy(),
+            nonce: t.nonce.to_alloy().to::<rU64>(),
+            block_hash: None,
+            block_number: None,
+            transaction_index: None,
+            from: from.to_alloy(),
+            to: None,
+            value: t.value.to_alloy(),
+            gas_price: None,
+            max_fee_per_gas: Some(t.max_fee_per_gas.to_alloy().to::<rU128>()),
+            max_priority_fee_per_gas: Some(t.max_priority_fee_per_gas.to_alloy().to::<rU128>()),
+            gas: t.gas_limit.to_alloy(),
+            input: t.input.clone().0.into(),
+            chain_id: Some(rU64::from(t.chain_id)),
+            signature: Some(Signature {
+                r: rU256::from_be_bytes(t.r.to_alloy().0),
+                s: rU256::from_be_bytes(t.s.to_alloy().0),
+                v: rU256::from(t.odd_y_parity as u8),
+                y_parity: Some(t.odd_y_parity.into()),
+            }),
+            access_list: Some(from_ethers_access_list(t.access_list).0),
+            transaction_type: Some(rU64::from(2)),
+            max_fee_per_blob_gas: None,
+            blob_versioned_hashes: vec![],
+            ..Default::default()
         },
     }
 }
@@ -243,6 +367,15 @@ impl From<MaybeImpersonatedTransaction> for EthersTransaction {
         let hash = transaction.hash();
         let sender = transaction.recover().unwrap_or_default();
         to_ethers_transaction_with_hash_and_sender(transaction.into(), hash, sender)
+    }
+}
+
+impl From<MaybeImpersonatedTransaction> for AlloyTransaction {
+    fn from(transaction: MaybeImpersonatedTransaction) -> Self {
+        let hash = transaction.hash();
+        let sender = transaction.recover().unwrap_or_default();
+
+        to_alloy_transaction_with_hash_and_sender(transaction.into(), hash, sender)
     }
 }
 
@@ -265,7 +398,6 @@ impl From<TransactionRequest> for EthTransactionRequest {
             chain_id,
             access_list: None,
             transaction_type: None,
-            optimism_fields: None,
         }
     }
 }

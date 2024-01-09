@@ -8,7 +8,7 @@ use foundry_cli::{
     update_progress, utils,
     utils::{handle_traces, TraceResult},
 };
-use foundry_common::{is_known_system_sender, types::ToAlloy, SYSTEM_TRANSACTION_TYPE};
+use foundry_common::{is_known_system_sender, SYSTEM_TRANSACTION_TYPE};
 use foundry_compilers::EvmVersion;
 use foundry_config::{find_project_root_path, Config};
 use foundry_evm::{
@@ -16,9 +16,10 @@ use foundry_evm::{
     opts::EvmOpts,
     utils::configure_tx_env,
 };
+use foundry_utils::types::ToAlloy;
 
 /// CLI arguments for `cast run`.
-#[derive(Clone, Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 pub struct RunArgs {
     /// The transaction hash.
     tx_hash: String,
@@ -98,13 +99,13 @@ impl RunArgs {
             .ok_or_else(|| eyre::eyre!("tx not found: {:?}", tx_hash))?;
 
         // check if the tx is a system transaction
-        if is_known_system_sender(tx.from.to_alloy()) ||
-            tx.transaction_type.map(|ty| ty.as_u64()) == Some(SYSTEM_TRANSACTION_TYPE)
+        if is_known_system_sender(tx.from.to_alloy())
+            || tx.transaction_type.map(|ty| ty.as_u64()) == Some(SYSTEM_TRANSACTION_TYPE)
         {
             return Err(eyre::eyre!(
                 "{:?} is a system transaction.\nReplaying system transactions is currently not supported.",
                 tx.hash
-            ))
+            ));
         }
 
         let tx_block_number = tx
@@ -143,18 +144,18 @@ impl RunArgs {
                 for (index, tx) in block.transactions.into_iter().enumerate() {
                     // System transactions such as on L2s don't contain any pricing info so we skip
                     // them otherwise this would cause reverts
-                    if is_known_system_sender(tx.from.to_alloy()) ||
-                        tx.transaction_type.map(|ty| ty.as_u64()) ==
-                            Some(SYSTEM_TRANSACTION_TYPE)
+                    if is_known_system_sender(tx.from.to_alloy())
+                        || tx.transaction_type.map(|ty| ty.as_u64())
+                            == Some(SYSTEM_TRANSACTION_TYPE)
                     {
                         update_progress!(pb, index);
-                        continue
+                        continue;
                     }
-                    if tx.hash == tx_hash {
-                        break
+                    if tx.hash.eq(&tx_hash) {
+                        break;
                     }
 
-                    configure_tx_env(&mut env, &tx);
+                    configure_tx_env(&mut env, &tx.clone().to_alloy());
 
                     if let Some(to) = tx.to {
                         trace!(tx=?tx.hash,?to, "executing previous call transaction");
@@ -191,7 +192,7 @@ impl RunArgs {
         let result = {
             executor.set_trace_printer(self.trace_printer);
 
-            configure_tx_env(&mut env, &tx);
+            configure_tx_env(&mut env, &tx.clone().to_alloy());
 
             if let Some(to) = tx.to {
                 trace!(tx=?tx.hash, to=?to, "executing call transaction");

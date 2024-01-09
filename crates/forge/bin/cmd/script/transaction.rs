@@ -1,29 +1,27 @@
 use super::{artifacts::ArtifactInfo, ScriptResult};
 use alloy_dyn_abi::JsonAbiExt;
 use alloy_json_abi::Function;
-use alloy_primitives::{Address, Bytes, B256};
+use alloy_primitives::{Address, B256};
 use ethers_core::types::{transaction::eip2718::TypedTransaction, NameOrAddress};
 use eyre::{ContextCompat, Result, WrapErr};
-use foundry_common::{
-    fmt::format_token_raw,
-    types::{ToAlloy, ToEthers},
-    RpcUrl, SELECTOR_LEN,
-};
+use foundry_common::{fmt::format_token_raw, provider::ethers::RpcUrl, SELECTOR_LEN};
 use foundry_evm::{constants::DEFAULT_CREATE2_DEPLOYER, traces::CallTraceDecoder, utils::CallKind};
+use foundry_utils::types::{ToAlloy, ToEthers};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AdditionalContract {
     #[serde(rename = "transactionType")]
     pub opcode: CallKind,
     #[serde(serialize_with = "wrapper::serialize_addr")]
     pub address: Address,
-    pub init_code: Bytes,
+    #[serde(with = "hex")]
+    pub init_code: Vec<u8>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TransactionWithMetadata {
     pub hash: Option<B256>,
@@ -378,7 +376,7 @@ pub mod wrapper {
 
     // "Receipt" of an executed transaction: details of its execution.
     // copied from https://github.com/gakonst/ethers-rs
-    #[derive(Clone, Default, Serialize, Deserialize)]
+    #[derive(Default, Clone, Serialize, Deserialize)]
     pub struct WrappedTransactionReceipt {
         /// Transaction hash.
         #[serde(rename = "transactionHash")]

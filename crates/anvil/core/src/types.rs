@@ -1,6 +1,4 @@
-use std::collections::BTreeMap;
-
-use ethers_core::types::{TxHash, H256, U256, U64};
+use alloy_primitives::{TxHash, B256, U256, U64};
 use revm::primitives::SpecId;
 
 #[cfg(feature = "serde")]
@@ -9,7 +7,7 @@ use serde::{de::Error, Deserializer, Serializer};
 /// Represents the params to set forking which can take various forms
 ///  - untagged
 ///  - tagged `forking`
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Forking {
     pub json_rpc_url: Option<String>,
     pub block_number: Option<u64>,
@@ -90,11 +88,11 @@ impl Default for EvmMineOptions {
 
 /// Represents the result of `eth_getWork`
 /// This may or may not include the block number
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Default)]
 pub struct Work {
-    pub pow_hash: H256,
-    pub seed_hash: H256,
-    pub target: H256,
+    pub pow_hash: B256,
+    pub seed_hash: B256,
+    pub target: B256,
     pub number: Option<u64>,
 }
 
@@ -113,7 +111,7 @@ impl serde::Serialize for Work {
 }
 
 /// A hex encoded or decimal index
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct Index(usize);
 
 impl From<Index> for usize {
@@ -174,30 +172,30 @@ impl<'a> serde::Deserialize<'a> for Index {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct NodeInfo {
     pub current_block_number: U64,
     pub current_block_timestamp: u64,
-    pub current_block_hash: H256,
+    pub current_block_hash: B256,
     pub hard_fork: SpecId,
     pub transaction_order: String,
     pub environment: NodeEnvironment,
     pub fork_config: NodeForkConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct NodeEnvironment {
     pub base_fee: U256,
-    pub chain_id: u64,
+    pub chain_id: U256,
     pub gas_limit: U256,
     pub gas_price: U256,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct NodeForkConfig {
@@ -209,27 +207,26 @@ pub struct NodeForkConfig {
 /// Anvil equivalent of `hardhat_metadata`.
 /// Metadata about the current Anvil instance.
 /// See <https://hardhat.org/hardhat-network/docs/reference#hardhat_metadata>
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct AnvilMetadata {
     pub client_version: &'static str,
-    pub chain_id: u64,
-    pub instance_id: H256,
-    pub latest_block_number: u64,
-    pub latest_block_hash: H256,
+    pub chain_id: U256,
+    pub instance_id: B256,
+    pub latest_block_number: U64,
+    pub latest_block_hash: B256,
     pub forked_network: Option<ForkedNetwork>,
-    pub snapshots: BTreeMap<U256, (u64, H256)>,
 }
 
 /// Information about the forked network.
 /// See <https://hardhat.org/hardhat-network/docs/reference#hardhat_metadata>
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ForkedNetwork {
-    pub chain_id: u64,
-    pub fork_block_number: u64,
+    pub chain_id: U256,
+    pub fork_block_number: U64,
     pub fork_block_hash: TxHash,
 }
 

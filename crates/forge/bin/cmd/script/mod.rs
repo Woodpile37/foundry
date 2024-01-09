@@ -6,7 +6,7 @@ use alloy_primitives::{Address, Bytes, U256};
 use clap::{Parser, ValueHint};
 use dialoguer::Confirm;
 use ethers_core::types::{
-    transaction::eip2718::TypedTransaction, Log, NameOrAddress, TransactionRequest,
+    transaction::eip2718::TypedTransaction, Chain, Log, NameOrAddress, TransactionRequest,
 };
 use ethers_providers::{Http, Middleware};
 use ethers_signers::LocalWallet;
@@ -24,14 +24,13 @@ use forge::{
 };
 use foundry_cli::opts::MultiWallet;
 use foundry_common::{
-    abi::{encode_function_args, get_func},
+    abi::encode_function_args,
     contracts::get_contract_name,
     errors::UnlinkedByteCode,
     evm::{Breakpoints, EvmArgs},
-    fmt::{format_token, format_token_raw},
-    shell,
-    types::{ToAlloy, ToEthers},
-    ContractsByArtifact, RpcUrl, CONTRACT_MAX_SIZE, SELECTOR_LEN,
+    fmt::format_token,
+    provider::ethers::RpcUrl,
+    shell, ContractsByArtifact, CONTRACT_MAX_SIZE, SELECTOR_LEN,
 };
 use foundry_compilers::{
     artifacts::{ContractBytecodeSome, Libraries},
@@ -44,15 +43,15 @@ use foundry_config::{
         value::{Dict, Map},
         Metadata, Profile, Provider,
     },
-    Config, NamedChain,
+    Config,
 };
 use foundry_evm::{
     constants::DEFAULT_CREATE2_DEPLOYER,
     decode,
     inspectors::cheatcodes::{BroadcastableTransaction, BroadcastableTransactions},
 };
+use foundry_utils::types::{ToAlloy, ToEthers};
 use futures::future;
-use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use yansi::Paint;
@@ -70,11 +69,21 @@ mod sequence;
 pub mod transaction;
 mod verify;
 
+/// List of Chains that support Shanghai.
+static SHANGHAI_ENABLED_CHAINS: &[Chain] = &[
+    Chain::Mainnet,
+    Chain::Goerli,
+    Chain::Sepolia,
+    Chain::OptimismGoerli,
+    Chain::OptimismSepolia,
+    Chain::BaseGoerli,
+];
+
 // Loads project's figment and merges the build cli arguments into it
 foundry_config::merge_impl_figment_convert!(ScriptArgs, opts, evm_opts);
 
 /// CLI arguments for `forge script`.
-#[derive(Clone, Debug, Default, Parser)]
+#[derive(Debug, Clone, Parser, Default)]
 pub struct ScriptArgs {
     /// The contract you want to run. Either the file path or contract name.
     ///
@@ -91,7 +100,12 @@ pub struct ScriptArgs {
     pub target_contract: Option<String>,
 
     /// The signature of the function you want to call in the contract, or raw calldata.
-    #[clap(long, short, default_value = "run()")]
+    #[clap(
+        long,
+        short,
+        default_value = "run()",
+        value_parser = foundry_common::clap_helpers::strip_0x_prefix
+    )]
     pub sig: String,
 
     /// Max priority fee per gas for EIP1559 transactions.
@@ -199,7 +213,7 @@ pub struct ScriptArgs {
 // === impl ScriptArgs ===
 
 impl ScriptArgs {
-    fn decode_traces(
+    pub fn decode_traces(
         &self,
         script_config: &ScriptConfig,
         result: &mut ScriptResult,
@@ -215,7 +229,6 @@ impl ScriptArgs {
         let mut decoder = CallTraceDecoderBuilder::new()
             .with_labels(result.labeled_addresses.clone())
             .with_verbosity(verbosity)
-            .with_local_identifier_abis(&local_identifier)
             .with_signature_identifier(SignaturesIdentifier::new(
                 Config::foundry_cache_dir(),
                 script_config.config.offline,
@@ -236,7 +249,7 @@ impl ScriptArgs {
         Ok(decoder)
     }
 
-    fn get_returns(
+    pub fn get_returns(
         &self,
         script_config: &ScriptConfig,
         returned: &Bytes,
@@ -263,7 +276,7 @@ impl ScriptArgs {
                         label,
                         NestedValue {
                             internal_type: internal_type.to_string(),
-                            value: format_token_raw(token),
+                            value: format_token(token),
                         },
                     );
                 }
@@ -276,7 +289,7 @@ impl ScriptArgs {
         Ok(returns)
     }
 
-    async fn show_traces(
+    pub async fn show_traces(
         &self,
         script_config: &ScriptConfig,
         decoder: &CallTraceDecoder,
@@ -287,7 +300,7 @@ impl ScriptArgs {
 
         if !result.success || verbosity > 3 {
             if result.traces.is_empty() {
-                warn!(verbosity, "no traces");
+                eyre::bail!("Unexpected error: No traces despite verbosity level. Please report this as a bug: https://github.com/foundry-rs/foundry/issues/new?assignees=&labels=T-bug&template=BUG-FORM.yml");
             }
 
             shell::println("Traces:")?;
@@ -355,13 +368,13 @@ impl ScriptArgs {
             return Err(eyre::eyre!(
                 "script failed: {}",
                 decode::decode_revert(&result.returned[..], None, None)
-            ))
+            ));
         }
 
         Ok(())
     }
 
-    fn show_json(&self, script_config: &ScriptConfig, result: &ScriptResult) -> Result<()> {
+    pub fn show_json(&self, script_config: &ScriptConfig, result: &ScriptResult) -> Result<()> {
         let returns = self.get_returns(script_config, &result.returned)?;
 
         let console_logs = decode_console_logs(&result.logs);
@@ -395,7 +408,7 @@ impl ScriptArgs {
                                 if let Some(ns) = new_sender {
                                     if sender != ns {
                                         shell::println("You have more than one deployer who could predeploy libraries. Using `--sender` instead.")?;
-                                        return Ok(None)
+                                        return Ok(None);
                                     }
                                 } else if sender != evm_opts.sender {
                                     new_sender = Some(sender);
@@ -425,7 +438,7 @@ impl ScriptArgs {
                 rpc: fork_url.clone(),
                 transaction: TypedTransaction::Legacy(TransactionRequest {
                     from: Some(from.to_ethers()),
-                    data: Some(bytes.clone().to_ethers()),
+                    data: Some(bytes.clone().0.into()),
                     nonce: Some((nonce + i as u64).into()),
                     ..Default::default()
                 }),
@@ -440,8 +453,8 @@ impl ScriptArgs {
     /// corresponding function by matching the selector, first 4 bytes in the calldata.
     ///
     /// Note: We assume that the `sig` is already stripped of its prefix, See [`ScriptArgs`]
-    fn get_method_and_calldata(&self, abi: &Abi) -> Result<(Function, Bytes)> {
-        let (func, data) = if let Ok(func) = get_func(&self.sig) {
+    pub fn get_method_and_calldata(&self, abi: &Abi) -> Result<(Function, Bytes)> {
+        let (func, data) = if let Ok(func) = Function::parse(&self.sig) {
             (
                 abi.functions().find(|&abi_func| abi_func.selector() == func.selector()).wrap_err(
                     format!("Function `{}` is not implemented in your script.", self.sig),
@@ -483,13 +496,13 @@ impl ScriptArgs {
         // From artifacts
         for (artifact, bytecode) in known_contracts.iter() {
             if bytecode.bytecode.object.is_unlinked() {
-                return Err(UnlinkedByteCode::Bytecode(artifact.identifier()).into())
+                return Err(UnlinkedByteCode::Bytecode(artifact.identifier()).into());
             }
             let init_code = bytecode.bytecode.object.as_bytes().unwrap();
             // Ignore abstract contracts
             if let Some(ref deployed_code) = bytecode.deployed_bytecode.bytecode {
                 if deployed_code.object.is_unlinked() {
-                    return Err(UnlinkedByteCode::DeployedBytecode(artifact.identifier()).into())
+                    return Err(UnlinkedByteCode::DeployedBytecode(artifact.identifier()).into());
                 }
                 let deployed_code = deployed_code.object.as_bytes().unwrap();
                 bytecodes.push((artifact.name.clone(), init_code, deployed_code));
@@ -514,7 +527,7 @@ impl ScriptArgs {
                         bytecodes.push((format!("Unknown{unknown_c}"), init_code, deployed_code));
                         unknown_c += 1;
                     }
-                    continue
+                    continue;
                 }
             }
             // Both should be raw and not decoded since it's just bytecode
@@ -544,7 +557,7 @@ impl ScriptArgs {
                     offset = 32;
                 }
             } else if to.is_some() {
-                continue
+                continue;
             }
 
             // Find artifact with a deployment code same as the data.
@@ -566,9 +579,9 @@ impl ScriptArgs {
         }
 
         // Only prompt if we're broadcasting and we've not disabled interactivity.
-        if prompt_user &&
-            !self.non_interactive &&
-            !Confirm::new().with_prompt("Do you wish to continue?".to_string()).interact()?
+        if prompt_user
+            && !self.non_interactive
+            && !Confirm::new().with_prompt("Do you wish to continue?".to_string()).interact()?
         {
             eyre::bail!("User canceled the script.");
         }
@@ -610,13 +623,13 @@ pub struct ScriptResult {
 }
 
 #[derive(Serialize, Deserialize)]
-struct JsonResult {
-    logs: Vec<String>,
-    gas_used: u64,
-    returns: HashMap<String, NestedValue>,
+pub struct JsonResult {
+    pub logs: Vec<String>,
+    pub gas_used: u64,
+    pub returns: HashMap<String, NestedValue>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct NestedValue {
     pub internal_type: String,
     pub value: String,
@@ -685,24 +698,38 @@ impl ScriptConfig {
     /// If not, warns the user.
     async fn check_shanghai_support(&self) -> Result<()> {
         let chain_ids = self.total_rpcs.iter().map(|rpc| async move {
-            let provider = ethers_providers::Provider::<Http>::try_from(rpc).ok()?;
-            let id = provider.get_chainid().await.ok()?;
-            let id_u64: u64 = id.try_into().ok()?;
-            NamedChain::try_from(id_u64).ok()
+            if let Ok(provider) = ethers_providers::Provider::<Http>::try_from(rpc) {
+                match provider.get_chainid().await {
+                    Ok(chain_id) => match TryInto::<Chain>::try_into(chain_id) {
+                        Ok(chain) => {
+                            return Some((SHANGHAI_ENABLED_CHAINS.contains(&chain), chain))
+                        }
+                        Err(_) => return None,
+                    },
+                    Err(_) => return None,
+                }
+            }
+            None
         });
 
-        let chains = future::join_all(chain_ids).await;
-        let iter = chains.iter().flatten().map(|c| (c.supports_shanghai(), c));
-        if iter.clone().any(|(s, _)| !s) {
+        let chain_ids: Vec<_> = future::join_all(chain_ids).await.into_iter().flatten().collect();
+
+        let chain_id_unsupported = chain_ids.iter().any(|(supported, _)| !supported);
+
+        // At least one chain ID is unsupported, therefore we print the message.
+        if chain_id_unsupported {
             let msg = format!(
-                "\
+                r#"
 EIP-3855 is not supported in one or more of the RPCs used.
 Unsupported Chain IDs: {}.
 Contracts deployed with a Solidity version equal or higher than 0.8.20 might not work properly.
-For more information, please see https://eips.ethereum.org/EIPS/eip-3855",
-                iter.filter(|(supported, _)| !supported)
-                    .map(|(_, chain)| *chain as u64)
-                    .format(", ")
+For more information, please see https://eips.ethereum.org/EIPS/eip-3855"#,
+                chain_ids
+                    .iter()
+                    .filter(|(supported, _)| !supported)
+                    .map(|(_, chain)| format!("{}", *chain as u64))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
             shell::println(Paint::yellow(msg))?;
         }

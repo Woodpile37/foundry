@@ -15,21 +15,23 @@ use crate::{
     mem::in_memory_db::MemDb,
     FeeManager, Hardfork,
 };
+use alloy_primitives::U64;
+use alloy_providers::provider::TempProvider;
+use alloy_rpc_types::BlockNumberOrTag;
+use alloy_transport::TransportError;
 use anvil_server::ServerConfig;
 use ethers::{
     core::k256::ecdsa::SigningKey,
     prelude::{rand::thread_rng, Wallet, U256},
-    providers::Middleware,
     signers::{
         coins_bip39::{English, Mnemonic},
         MnemonicBuilder, Signer,
     },
-    types::BlockNumber,
     utils::{format_ether, hex, to_checksum, WEI_IN_ETHER},
 };
 use foundry_common::{
-    types::{ToAlloy, ToEthers},
-    ProviderBuilder, ALCHEMY_FREE_TIER_CUPS, NON_ARCHIVE_NODE_WARNING, REQUEST_TIMEOUT,
+    provider::alloy::ProviderBuilder, ALCHEMY_FREE_TIER_CUPS, NON_ARCHIVE_NODE_WARNING,
+    REQUEST_TIMEOUT,
 };
 use foundry_config::Config;
 use foundry_evm::{
@@ -39,6 +41,7 @@ use foundry_evm::{
     revm::primitives::{BlockEnv, CfgEnv, SpecId, TxEnv, U256 as rU256},
     utils::apply_chain_and_block_specific_env_changes,
 };
+use foundry_utils::types::{ToAlloy, ToEthers};
 use parking_lot::RwLock;
 use serde_json::{json, to_writer, Value};
 use std::{
@@ -87,7 +90,7 @@ const BANNER: &str = r"
 ";
 
 /// Configurations of the EVM node
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct NodeConfig {
     /// Chain ID of the EVM chain
     pub chain_id: Option<u64>,
@@ -169,8 +172,6 @@ pub struct NodeConfig {
     pub transaction_block_keeper: Option<usize>,
     /// Disable the default CREATE2 deployer
     pub disable_default_create2_deployer: bool,
-    /// Enable Optimism deposit transaction
-    pub enable_optimism: bool,
 }
 
 impl NodeConfig {
@@ -357,7 +358,7 @@ impl NodeConfig {
     /// random, free port by setting it to `0`
     #[doc(hidden)]
     pub fn test() -> Self {
-        Self { enable_tracing: true, silent: true, port: 0, ..Default::default() }
+        Self { enable_tracing: false, silent: true, port: 0, ..Default::default() }
     }
 }
 
@@ -408,7 +409,6 @@ impl Default for NodeConfig {
             init_state: None,
             transaction_block_keeper: None,
             disable_default_create2_deployer: false,
-            enable_optimism: false,
         }
     }
 }
@@ -769,7 +769,7 @@ impl NodeConfig {
             .expect("Failed writing json");
         }
         if self.silent {
-            return
+            return;
         }
 
         println!("{}", self.as_string(fork))
@@ -780,18 +780,11 @@ impl NodeConfig {
     /// See also [ Config::foundry_block_cache_file()]
     pub fn block_cache_path(&self, block: u64) -> Option<PathBuf> {
         if self.no_storage_caching || self.eth_rpc_url.is_none() {
-            return None
+            return None;
         }
         let chain_id = self.get_chain_id();
 
         Config::foundry_block_cache_file(chain_id, block)
-    }
-
-    /// Sets whether to enable optimism support
-    #[must_use]
-    pub fn with_optimism(mut self, enable_optimism: bool) -> Self {
-        self.enable_optimism = enable_optimism;
-        self
     }
 
     /// Configures everything related to env, backend and database and returns the
@@ -810,7 +803,6 @@ impl NodeConfig {
         // caller is a contract. So we disable the check by default.
         cfg.disable_eip3607 = true;
         cfg.disable_block_gas_limit = self.disable_block_gas_limit;
-        cfg.optimism = self.enable_optimism;
 
         let mut env = revm::primitives::Env {
             cfg,
@@ -862,7 +854,7 @@ impl NodeConfig {
         // if the option is not disabled and we are not forking.
         if !self.disable_default_create2_deployer && self.eth_rpc_url.is_none() {
             backend
-                .set_create2_deployer(DEFAULT_CREATE2_DEPLOYER.to_ethers())
+                .set_create2_deployer(DEFAULT_CREATE2_DEPLOYER)
                 .await
                 .expect("Failed to create default create2 deployer");
         }
@@ -935,8 +927,13 @@ impl NodeConfig {
             } else if self.hardfork.is_none() {
                 // auto adjust hardfork if not specified
                 // but only if we're forking mainnet
-                let chain_id =
-                    provider.get_chainid().await.expect("Failed to fetch network chain id");
+                let chain_id = U256::from(
+                    provider
+                        .get_chain_id()
+                        .await
+                        .expect("Failed to fetch network chain id")
+                        .to::<u64>(),
+                );
                 if chain_id == ethers::types::Chain::Mainnet.into() {
                     let hardfork: Hardfork = fork_block_number.into();
                     env.cfg.spec_id = hardfork.into();
@@ -957,7 +954,7 @@ impl NodeConfig {
         };
 
         let block = provider
-            .get_block(BlockNumber::Number(fork_block_number.into()))
+            .get_block(BlockNumberOrTag::Number(fork_block_number).into(), false)
             .await
             .expect("Failed to get fork block");
 
@@ -972,7 +969,7 @@ latest block number: {latest_block}"
                 // If the `eth_getBlockByNumber` call succeeds, but returns null instead of
                 // the block, and the block number is less than equal the latest block, then
                 // the user is forking from a non-archive node with an older block number.
-                if fork_block_number <= latest_block.as_u64() {
+                if fork_block_number <= latest_block {
                     message.push_str(&format!("\n{}", NON_ARCHIVE_NODE_WARNING));
                 }
                 panic!("{}", message);
@@ -983,18 +980,18 @@ latest block number: {latest_block}"
         // we only use the gas limit value of the block if it is non-zero and the block gas
         // limit is enabled, since there are networks where this is not used and is always
         // `0x0` which would inevitably result in `OutOfGas` errors as soon as the evm is about to record gas, See also <https://github.com/foundry-rs/foundry/issues/3247>
-        let gas_limit = if self.disable_block_gas_limit || block.gas_limit.is_zero() {
+        let gas_limit = if self.disable_block_gas_limit || block.header.gas_limit.is_zero() {
             rU256::from(u64::MAX)
         } else {
-            block.gas_limit.to_alloy()
+            block.header.gas_limit
         };
 
         env.block = BlockEnv {
             number: rU256::from(fork_block_number),
-            timestamp: block.timestamp.to_alloy(),
-            difficulty: block.difficulty.to_alloy(),
+            timestamp: block.header.timestamp,
+            difficulty: block.header.difficulty,
             // ensures prevrandao is set
-            prevrandao: Some(block.mix_hash.unwrap_or_default()).map(|h| h.to_alloy()),
+            prevrandao: Some(block.header.mix_hash),
             gas_limit,
             // Keep previous `coinbase` and `basefee` value
             coinbase: env.block.coinbase,
@@ -1007,15 +1004,15 @@ latest block number: {latest_block}"
 
         // if not set explicitly we use the base fee of the latest block
         if self.base_fee.is_none() {
-            if let Some(base_fee) = block.base_fee_per_gas {
-                self.base_fee = Some(base_fee);
-                env.block.basefee = base_fee.to_alloy();
+            if let Some(base_fee) = block.header.base_fee_per_gas {
+                self.base_fee = Some(base_fee.to_ethers());
+                env.block.basefee = base_fee;
                 // this is the base fee of the current block, but we need the base fee of
                 // the next block
                 let next_block_base_fee = fees.get_next_block_base_fee_per_gas(
-                    block.gas_used,
-                    block.gas_limit,
-                    block.base_fee_per_gas.unwrap_or_default(),
+                    block.header.gas_used.to_ethers(),
+                    block.header.gas_limit.to_ethers(),
+                    block.header.base_fee_per_gas.unwrap_or_default().to_ethers(),
                 );
                 // update next base fee
                 fees.set_base_fee(next_block_base_fee.into());
@@ -1025,22 +1022,21 @@ latest block number: {latest_block}"
         // use remote gas price
         if self.gas_price.is_none() {
             if let Ok(gas_price) = provider.get_gas_price().await {
-                self.gas_price = Some(gas_price);
-                fees.set_gas_price(gas_price);
+                self.gas_price = Some(gas_price.to_ethers());
+                fees.set_gas_price(gas_price.to_ethers());
             }
         }
 
-        let block_hash = block.hash.unwrap_or_default();
+        let block_hash = block.header.hash.unwrap_or_default();
 
         let chain_id = if let Some(chain_id) = self.chain_id {
             chain_id
         } else {
             let chain_id = if let Some(fork_chain_id) = fork_chain_id {
-                fork_chain_id
+                fork_chain_id.as_u64()
             } else {
-                provider.get_chainid().await.unwrap()
-            }
-            .as_u64();
+                provider.get_chain_id().await.unwrap().to::<u64>()
+            };
 
             // need to update the dev signers and env with the chain id
             self.set_chain_id(Some(chain_id));
@@ -1072,8 +1068,8 @@ latest block number: {latest_block}"
             provider,
             chain_id,
             override_chain_id,
-            timestamp: block.timestamp.as_u64(),
-            base_fee: block.base_fee_per_gas,
+            timestamp: block.header.timestamp.to::<u64>(),
+            base_fee: block.header.base_fee_per_gas,
             timeout: self.fork_request_timeout,
             retries: self.fork_request_retries,
             backoff: self.fork_retry_backoff,
@@ -1085,7 +1081,7 @@ latest block number: {latest_block}"
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PruneStateHistoryConfig {
     pub enabled: bool,
     pub max_memory_history: Option<usize>,
@@ -1110,7 +1106,7 @@ impl PruneStateHistoryConfig {
 }
 
 /// Can create dev accounts
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct AccountGenerator {
     chain_id: u64,
     amount: usize,
@@ -1192,15 +1188,15 @@ pub fn anvil_tmp_dir() -> Option<PathBuf> {
 ///
 /// This fetches the "latest" block and checks whether the `Block` is fully populated (`hash` field
 /// is present). This prevents edge cases where anvil forks the "latest" block but `eth_getBlockByNumber` still returns a pending block, <https://github.com/foundry-rs/foundry/issues/2036>
-async fn find_latest_fork_block<M: Middleware>(provider: M) -> Result<u64, M::Error> {
-    let mut num = provider.get_block_number().await?.as_u64();
+async fn find_latest_fork_block<P: TempProvider>(provider: P) -> Result<u64, TransportError> {
+    let mut num = provider.get_block_number().await?;
 
     // walk back from the head of the chain, but at most 2 blocks, which should be more than enough
     // leeway
     for _ in 0..2 {
-        if let Some(block) = provider.get_block(num).await? {
-            if block.hash.is_some() {
-                break
+        if let Some(block) = provider.get_block(num.into(), false).await? {
+            if block.header.hash.is_some() {
+                break;
             }
         }
         // block not actually finalized, so we try the block before

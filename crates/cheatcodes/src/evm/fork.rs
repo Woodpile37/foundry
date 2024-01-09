@@ -1,14 +1,13 @@
 use crate::{Cheatcode, Cheatcodes, CheatsCtxt, DatabaseExt, Result, Vm::*};
-use alloy_primitives::B256;
+use alloy_primitives::{FixedBytes, B256, U256};
+use alloy_providers::provider::TempProvider;
+use alloy_rpc_types::{Filter, Topic};
 use alloy_sol_types::SolValue;
-use ethers_core::types::Filter;
-use ethers_providers::Middleware;
-use foundry_common::{
-    types::{ToAlloy, ToEthers},
-    ProviderBuilder,
-};
+use eyre::WrapErr;
+use foundry_common::provider::alloy::ProviderBuilder;
 use foundry_compilers::utils::RuntimeOrHandle;
 use foundry_evm_core::fork::CreateFork;
+use foundry_utils::types::{ToAlloy, ToEthers};
 
 impl Cheatcode for activeForkCall {
     fn apply_full<DB: DatabaseExt>(&self, ccx: &mut CheatsCtxt<DB>) -> Result {
@@ -220,6 +219,8 @@ impl Cheatcode for isPersistentCall {
 
 impl Cheatcode for rpcCall {
     fn apply_full<DB: DatabaseExt>(&self, ccx: &mut CheatsCtxt<DB>) -> Result {
+        /*
+        todo what do we do here
         let Self { method, params } = self;
         let url =
             ccx.data.db.active_fork_url().ok_or_else(|| fmt_err!("no active fork URL found"))?;
@@ -234,12 +235,14 @@ impl Cheatcode for rpcCall {
             .map_err(|err| fmt_err!("failed to parse result: {err}"))?;
 
         Ok(result_as_tokens.abi_encode())
+        */
+        Ok(1.abi_encode())
     }
 }
 
 impl Cheatcode for eth_getLogsCall {
     fn apply_full<DB: DatabaseExt>(&self, ccx: &mut CheatsCtxt<DB>) -> Result {
-        let Self { fromBlock, toBlock, target, topics } = self;
+        let Self { fromBlock, toBlock, addr, topics } = self;
         let (Ok(from_block), Ok(to_block)) = (u64::try_from(fromBlock), u64::try_from(toBlock))
         else {
             bail!("blocks in block range must be less than 2^64 - 1")
@@ -252,35 +255,39 @@ impl Cheatcode for eth_getLogsCall {
         let url =
             ccx.data.db.active_fork_url().ok_or_else(|| fmt_err!("no active fork URL found"))?;
         let provider = ProviderBuilder::new(&url).build()?;
-        let mut filter =
-            Filter::new().address(target.to_ethers()).from_block(from_block).to_block(to_block);
+        let mut filter = Filter::new().address(*addr).from_block(from_block).to_block(to_block);
         for (i, topic) in topics.iter().enumerate() {
             let topic = topic.to_ethers();
+            // todo: needed because rust wants to convert FixedBytes<32> to U256 to convert it back
+            // to FixedBytes<32> and then to Topic for some reason removing the
+            // From<U256> impl in alloy does not fix the situation, and it is not possible to impl
+            // From<FixedBytes<32>> either because of a conflicting impl
             match i {
-                0 => filter = filter.topic0(topic),
-                1 => filter = filter.topic1(topic),
-                2 => filter = filter.topic2(topic),
-                3 => filter = filter.topic3(topic),
+                0 => filter = filter.event_signature(U256::from_be_bytes(topic.to_fixed_bytes())),
+                1 => filter = filter.topic1(U256::from_be_bytes(topic.to_fixed_bytes())),
+                2 => filter = filter.topic2(U256::from_be_bytes(topic.to_fixed_bytes())),
+                3 => filter = filter.topic3(U256::from_be_bytes(topic.to_fixed_bytes())),
                 _ => unreachable!(),
             };
         }
 
+        // todo: handle the errors somehow
         let logs = RuntimeOrHandle::new()
-            .block_on(provider.get_logs(&filter))
-            .map_err(|e| fmt_err!("eth_getLogs: {e}"))?;
+            .block_on(provider.get_logs(filter))
+            .wrap_err("failed to get logs")?;
 
         let eth_logs = logs
             .into_iter()
             .map(|log| EthGetLogs {
-                emitter: log.address.to_alloy(),
-                topics: log.topics.into_iter().map(ToAlloy::to_alloy).collect(),
+                emitter: log.address,
+                topics: log.topics.into_iter().collect(),
                 data: log.data.0.into(),
-                blockHash: log.block_hash.unwrap_or_default().to_alloy(),
-                blockNumber: log.block_number.unwrap_or_default().to_alloy().to(),
-                transactionHash: log.transaction_hash.unwrap_or_default().to_alloy(),
-                transactionIndex: log.transaction_index.unwrap_or_default().to_alloy().to(),
-                logIndex: log.log_index.unwrap_or_default().to_alloy(),
-                removed: log.removed.unwrap_or(false),
+                blockHash: log.block_hash.unwrap_or_default(),
+                blockNumber: log.block_number.unwrap_or_default().to(),
+                transactionHash: log.transaction_hash.unwrap_or_default(),
+                transactionIndex: log.transaction_index.unwrap_or_default().to(),
+                logIndex: log.log_index.unwrap_or_default(),
+                removed: log.removed,
             })
             .collect::<Vec<_>>();
 
