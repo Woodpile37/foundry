@@ -67,6 +67,22 @@ async fn test_rpc_fork() {
     TestConfig::with_filter(runner.await, filter).run().await;
 }
 
+/// Executes eth_getLogs cheatcode
+#[tokio::test(flavor = "multi_thread")]
+async fn test_get_logs_fork() {
+    let filter = Filter::new("testEthGetLogs", ".*", &format!(".*cheats{RE_PATH_SEPARATOR}Fork"))
+        .exclude_tests(".*Revert");
+    TestConfig::filter(filter).await.run().await;
+}
+
+/// Executes rpc cheatcode
+#[tokio::test(flavor = "multi_thread")]
+async fn test_rpc_fork() {
+    let filter = Filter::new("testRpc", ".*", &format!(".*cheats{RE_PATH_SEPARATOR}Fork"))
+        .exclude_tests(".*Revert");
+    TestConfig::filter(filter).await.run().await;
+}
+
 /// Tests that we can launch in forking mode
 #[tokio::test(flavor = "multi_thread")]
 async fn test_launch_fork() {

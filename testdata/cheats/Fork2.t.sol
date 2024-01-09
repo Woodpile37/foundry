@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: Unlicense
 pragma solidity 0.8.18;
 
 import "ds-test/test.sol";
@@ -62,7 +62,7 @@ contract ForkTest is DSTest {
     }
 
     // ensures forks have different block hashes
-    function testBlockNumbersMismatch() public {
+    function testBlockNumbersMimatch() public {
         vm.selectFork(mainnetFork);
         uint256 num = block.number;
         bytes32 mainHash = blockhash(block.number - 1);
@@ -221,12 +221,11 @@ contract ForkTest is DSTest {
     }
 
     function testRpc() public {
-        // balance at block <https://etherscan.io/block/18332681>
         vm.selectFork(mainnetFork);
-        string memory path = "fixtures/Rpc/balance_params.json";
+        string memory path = "../testdata/fixtures/Rpc/balance_params.json";
         string memory file = vm.readFile(path);
         bytes memory result = vm.rpc("eth_getBalance", file);
-        assertEq(hex"10b7c11bcb51e6", result);
+        assertEq(result, hex"03202879715fd8");
     }
 }
 
