@@ -1,5 +1,6 @@
 use crate::init_tracing;
 use eyre::{Result, WrapErr};
+use fd_lock::RwLock;
 use foundry_compilers::{
     cache::SolFilesCache,
     error::Result as SolcResult,
@@ -9,6 +10,7 @@ use foundry_compilers::{
 use foundry_config::Config;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
+use pretty_assertions::assert_eq;
 use regex::Regex;
 use std::{
     env,
@@ -50,6 +52,16 @@ pub const SOLC_VERSION: &str = "0.8.23";
 /// versions.
 pub const OTHER_SOLC_VERSION: &str = "0.8.22";
 
+/// Creates a file lock to the global template dir.
+pub fn template_lock() -> RwLock<File> {
+    let lock_path = &*TEMPLATE_LOCK;
+    let lock_file = pretty_err(
+        lock_path,
+        fs::OpenOptions::new().read(true).write(true).create(true).open(lock_path),
+    );
+    RwLock::new(lock_file)
+}
+
 /// Initializes a project with `forge init` at the given path.
 ///
 /// This should be called after an empty project is created like in
@@ -70,9 +82,9 @@ pub fn initialize(target: &Path) {
     pretty_err(tpath, fs::create_dir_all(tpath));
 
     // Initialize the global template if necessary.
-    let mut lock = crate::fd_lock::new_lock(TEMPLATE_LOCK.as_path());
+    let mut lock = template_lock();
     let mut _read = Some(lock.read().unwrap());
-    if fs::read(&*TEMPLATE_LOCK).unwrap() != b"1" {
+    if fs::read_to_string(&*TEMPLATE_LOCK).unwrap() != "1" {
         // We are the first to acquire the lock:
         // - initialize a new empty temp project;
         // - run `forge init`;
@@ -168,7 +180,7 @@ pub fn setup_forge_project(test: TestProject) -> (TestProject, TestCommand) {
 }
 
 /// How to initialize a remote git project
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct RemoteProject {
     id: String,
     run_build: bool,
@@ -225,7 +237,7 @@ pub fn setup_forge_remote(prj: impl Into<RemoteProject>) -> (TestProject, TestCo
     try_setup_forge_remote(prj).unwrap()
 }
 
-/// Same as `setup_forge_remote` but not panicking
+/// Same as `setup_forge_remote` but not panicing
 pub fn try_setup_forge_remote(
     config: impl Into<RemoteProject>,
 ) -> Result<(TestProject, TestCommand)> {
@@ -560,7 +572,7 @@ fn config_paths_exist(paths: &ProjectPathsConfig, cached: bool) {
 pub fn pretty_err<T, E: std::error::Error>(path: impl AsRef<Path>, res: Result<T, E>) -> T {
     match res {
         Ok(t) => t,
-        Err(err) => panic!("{}: {err}", path.as_ref().display()),
+        Err(err) => panic!("{}: {err:?}", path.as_ref().display()),
     }
 }
 
@@ -678,31 +690,6 @@ impl TestCommand {
         let output = cmd.output().unwrap();
         self.ensure_success(&output).unwrap();
         output
-    }
-
-    /// Returns a new [Command] that is inside the current project dir
-    pub fn cmd_in_current_dir(&self, program: &str) -> Command {
-        let mut cmd = Command::new(program);
-        cmd.current_dir(self.project.root());
-        cmd
-    }
-
-    /// Runs `git add .` inside the project's dir
-    #[track_caller]
-    pub fn git_add(&self) -> Result<()> {
-        let mut cmd = self.cmd_in_current_dir("git");
-        cmd.arg("add").arg(".");
-        let output = cmd.output()?;
-        self.ensure_success(&output)
-    }
-
-    /// Runs `git commit .` inside the project's dir
-    #[track_caller]
-    pub fn git_commit(&self, msg: &str) -> Result<()> {
-        let mut cmd = self.cmd_in_current_dir("git");
-        cmd.arg("commit").arg("-m").arg(msg);
-        let output = cmd.output()?;
-        self.ensure_success(&output)
     }
 
     /// Executes the command and returns the `(stdout, stderr)` of the output as lossy `String`s.
@@ -898,60 +885,54 @@ stderr:
 /// terminal is tty, the path argument can be wrapped in [tty_fixture_path()]
 pub trait OutputExt {
     /// Ensure the command wrote the expected data to `stdout`.
-    fn stdout_matches_content(&self, expected: &str);
-
-    /// Ensure the command wrote the expected data to `stdout`.
     fn stdout_matches_path(&self, expected_path: impl AsRef<Path>);
 
     /// Ensure the command wrote the expected data to `stderr`.
     fn stderr_matches_path(&self, expected_path: impl AsRef<Path>);
 }
 
-/// Patterns to remove from fixtures before comparing output
-///
-/// This should strip everything that can vary from run to run, like elapsed time, file paths
-static IGNORE_IN_FIXTURES: Lazy<Regex> = Lazy::new(|| {
-    let re = &[
-        // solc version
-        r" ?Solc(?: version)? \d+.\d+.\d+",
-        r" with \d+.\d+.\d+",
-        // solc runs
-        r"runs: \d+, μ: \d+, ~: \d+",
-        // elapsed time
-        "finished in .*?s",
-        // file paths
-        r"-->.*\.sol",
-        r"Location(.|\n)*\.rs(.|\n)*Backtrace",
-        // other
-        r"Transaction hash: 0x[0-9A-Fa-f]{64}",
-    ];
-    Regex::new(&format!("({})", re.join("|"))).unwrap()
-});
-
 fn normalize_output(s: &str) -> String {
-    let s = s.replace("\r\n", "\n").replace('\\', "/");
-    IGNORE_IN_FIXTURES.replace_all(&s, "").into_owned()
+    static RULES: Lazy<Vec<(Regex, &str)>> = Lazy::new(|| {
+        static RULES_RAW: &[(&str, &str)] = &[
+            (r"( )?Solc( version)? \d+.\d+.\d+", "${1}Solc$2 $$SOLC_VERSION"),
+            (r" with \d+.\d+.\d+", " with $$SOLC_VERSION"),
+            (r"runs: \d+, μ: \d+, ~: \d+", "runs: $$RUNS, μ: $$MEAN, ~: $$MEDIAN"),
+            (r"finished in (.*?s)", "finished in $$TIME"),
+            (r"-->\s*.*\.sol", "--> $$PATH.sol"),
+            (r"Transaction hash: 0x[0-9A-Fa-f]{64}", "Transaction hash: $$TX_HASH"),
+        ];
+        RULES_RAW.iter().map(|&(re, to)| (Regex::new(re).unwrap(), to)).collect()
+    });
+
+    let mut s = s.replace("\r\n", "\n").replace('\\', "/");
+    for (re, to) in RULES.iter() {
+        s = re.replace_all(&s, *to).into_owned();
+    }
+    s
 }
 
 impl OutputExt for Output {
     #[track_caller]
-    fn stdout_matches_content(&self, expected: &str) {
-        let out = lossy_string(&self.stdout);
-        pretty_assertions::assert_eq!(normalize_output(&out), normalize_output(expected));
-    }
-
-    #[track_caller]
     fn stdout_matches_path(&self, expected_path: impl AsRef<Path>) {
-        let expected = fs::read_to_string(expected_path).unwrap();
-        self.stdout_matches_content(&expected);
+        matches_path(self, expected_path.as_ref(), true);
     }
 
     #[track_caller]
     fn stderr_matches_path(&self, expected_path: impl AsRef<Path>) {
-        let expected = fs::read_to_string(expected_path).unwrap();
-        let err = lossy_string(&self.stderr);
-        pretty_assertions::assert_eq!(normalize_output(&err), normalize_output(&expected));
+        matches_path(self, expected_path.as_ref(), false);
     }
+}
+
+#[track_caller]
+fn matches_path(output: &Output, path: &Path, stdout: bool) {
+    let expected = fs::read_to_string(path).unwrap();
+    let expected_n = normalize_output(&expected);
+    if expected != expected_n {
+        fs::write(path, expected_n.as_bytes()).unwrap();
+    }
+
+    let s = lossy_string(if stdout { &output.stdout } else { &output.stderr });
+    assert_eq!(normalize_output(&s), expected_n);
 }
 
 /// Returns the fixture path depending on whether the current terminal is tty
@@ -987,6 +968,7 @@ fn lossy_string(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn tty_path_works() {
@@ -999,14 +981,23 @@ mod tests {
     }
 
     #[test]
-    fn fixture_regex_matches() {
-        assert!(IGNORE_IN_FIXTURES.is_match(
-            r"
-Location:
-   [35mcli/src/compile.rs[0m:[35m151[0m
-
-Backtrace omitted.
-        "
-        ));
+    fn normalizes_output() {
+        let s = "
+Compiling 22 files with 0.8.23
+Solc 0.8.23 finished in 1.95s
+Compiler run successful!
+Deployer: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+Deployed to: 0x5FbDB2315678afecb367f032d93F642f64180aa3
+Transaction hash: 0x4c3d9f7c4cc26876b43a11ba7ff218374471786a8ae8bf5574deb1d97fc1e851
+";
+        let expected = "
+Compiling 22 files with $SOLC_VERSION
+Solc $SOLC_VERSION finished in $TIME
+Compiler run successful!
+Deployer: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+Deployed to: 0x5FbDB2315678afecb367f032d93F642f64180aa3
+Transaction hash: $TX_HASH
+";
+        assert_eq!(normalize_output(s), expected);
     }
 }

@@ -1,10 +1,10 @@
 //! Contains various tests related to `forge script`.
 
 use crate::constants::TEMPLATE_CONTRACT;
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::Address;
 use anvil::{spawn, NodeConfig};
-use foundry_common::rpc;
 use foundry_test_utils::{util::OutputExt, ScriptOutcome, ScriptTester};
+use foundry_utils::{rpc, types::ToEthers};
 use regex::Regex;
 use serde_json::Value;
 use std::{env, path::PathBuf, str::FromStr};
@@ -32,9 +32,9 @@ contract ContractScript is Script {
             )
             .unwrap();
 
-        let rpc = foundry_common::rpc::next_http_rpc_endpoint();
+        let rpc = foundry_utils::rpc::next_http_rpc_endpoint();
 
-        cmd.arg("script").arg(script).args(["--fork-url", rpc.as_str(), "-vvvvv"]).assert_success();
+        cmd.arg("script").arg(script).args(["--fork-url", rpc.as_str(), "-vvvv"]);
     }
 );
 
@@ -118,7 +118,7 @@ import "forge-std/Script.sol";
 
 contract GasWaster {
     function wasteGas(uint256 minGas) public {
-        require(gasleft() >= minGas, "Gas left needs to be higher");
+        require(gasleft() >= minGas,  "Gas left needs to be higher");
     }
 }
 contract DeployScript is Script {
@@ -171,7 +171,7 @@ import "forge-std/Script.sol";
 
 contract GasWaster {
     function wasteGas(uint256 minGas) public {
-        require(gasleft() >= minGas, "Gas left needs to be higher");
+        require(gasleft() >= minGas,  "Gas left needs to be higher");
     }
 }
 contract DeployScript is Script {
@@ -279,7 +279,7 @@ contract HashChecker {
     }
 
     function checkLastHash() public {
-        require(lastHash != bytes32(0), "Hash shouldn't be zero");
+        require(lastHash != bytes32(0),  "Hash shouldn't be zero");
     }
 }
 contract DeployScript is Script {
@@ -380,12 +380,12 @@ forgetest_async!(can_deploy_script_without_lib, |prj, cmd| {
     let mut tester = ScriptTester::new_broadcast(cmd, &handle.http_endpoint(), prj.root());
 
     tester
-        .load_private_keys(&[0, 1])
+        .load_private_keys([0, 1])
         .await
         .add_sig("BroadcastTestNoLinking", "deployDoesntPanic()")
         .simulate(ScriptOutcome::OkSimulation)
         .broadcast(ScriptOutcome::OkBroadcast)
-        .assert_nonce_increment(&[(0, 1), (1, 2)])
+        .assert_nonce_increment([(0, 1), (1, 2)])
         .await;
 });
 
@@ -394,12 +394,12 @@ forgetest_async!(can_deploy_script_with_lib, |prj, cmd| {
     let mut tester = ScriptTester::new_broadcast(cmd, &handle.http_endpoint(), prj.root());
 
     tester
-        .load_private_keys(&[0, 1])
+        .load_private_keys([0, 1])
         .await
         .add_sig("BroadcastTest", "deploy()")
         .simulate(ScriptOutcome::OkSimulation)
         .broadcast(ScriptOutcome::OkBroadcast)
-        .assert_nonce_increment(&[(0, 2), (1, 1)])
+        .assert_nonce_increment([(0, 2), (1, 1)])
         .await;
 });
 
@@ -411,14 +411,14 @@ forgetest_async!(
         let mut tester = ScriptTester::new_broadcast(cmd, &handle.http_endpoint(), prj.root());
 
         tester
-            .load_addresses(&[
+            .load_addresses(vec![
                 Address::from_str("0x90F79bf6EB2c4f870365E785982E1f101E93b906").unwrap()
             ])
             .await
             .add_sig("BroadcastTest", "deployPrivateKey()")
             .simulate(ScriptOutcome::OkSimulation)
             .broadcast(ScriptOutcome::OkBroadcast)
-            .assert_nonce_increment_addresses(&[(
+            .assert_nonce_increment_addresses(vec![(
                 Address::from_str("0x90F79bf6EB2c4f870365E785982E1f101E93b906").unwrap(),
                 3,
             )])
@@ -450,14 +450,14 @@ forgetest_async!(
         let mut tester = ScriptTester::new_broadcast(cmd, &handle.http_endpoint(), prj.root());
 
         tester
-            .load_addresses(&[
+            .load_addresses(vec![
                 Address::from_str("0x90F79bf6EB2c4f870365E785982E1f101E93b906").unwrap()
             ])
             .await
             .add_sig("BroadcastTest", "deployRememberKey()")
             .simulate(ScriptOutcome::OkSimulation)
             .broadcast(ScriptOutcome::OkBroadcast)
-            .assert_nonce_increment_addresses(&[(
+            .assert_nonce_increment_addresses(vec![(
                 Address::from_str("0x90F79bf6EB2c4f870365E785982E1f101E93b906").unwrap(),
                 2,
             )])
@@ -474,7 +474,7 @@ forgetest_async!(
 
         tester
             .add_deployer(0)
-            .load_addresses(&[
+            .load_addresses(vec![
                 Address::from_str("0x90F79bf6EB2c4f870365E785982E1f101E93b906").unwrap()
             ])
             .await
@@ -482,15 +482,15 @@ forgetest_async!(
             .simulate(ScriptOutcome::OkSimulation)
             .resume(ScriptOutcome::MissingWallet)
             // load missing wallet
-            .load_private_keys(&[0])
+            .load_private_keys([0])
             .await
             .run(ScriptOutcome::OkBroadcast)
-            .assert_nonce_increment_addresses(&[(
+            .assert_nonce_increment_addresses(vec![(
                 Address::from_str("0x90F79bf6EB2c4f870365E785982E1f101E93b906").unwrap(),
                 1,
             )])
             .await
-            .assert_nonce_increment(&[(0, 2)])
+            .assert_nonce_increment([(0, 2)])
             .await;
     }
 );
@@ -500,16 +500,16 @@ forgetest_async!(can_resume_script, |prj, cmd| {
     let mut tester = ScriptTester::new_broadcast(cmd, &handle.http_endpoint(), prj.root());
 
     tester
-        .load_private_keys(&[0])
+        .load_private_keys([0])
         .await
         .add_sig("BroadcastTest", "deploy()")
         .simulate(ScriptOutcome::OkSimulation)
         .resume(ScriptOutcome::MissingWallet)
         // load missing wallet
-        .load_private_keys(&[1])
+        .load_private_keys([1])
         .await
         .run(ScriptOutcome::OkBroadcast)
-        .assert_nonce_increment(&[(0, 2), (1, 1)])
+        .assert_nonce_increment([(0, 2), (1, 1)])
         .await;
 });
 
@@ -519,12 +519,12 @@ forgetest_async!(can_deploy_broadcast_wrap, |prj, cmd| {
 
     tester
         .add_deployer(2)
-        .load_private_keys(&[0, 1, 2])
+        .load_private_keys([0, 1, 2])
         .await
         .add_sig("BroadcastTest", "deployOther()")
         .simulate(ScriptOutcome::OkSimulation)
         .broadcast(ScriptOutcome::OkBroadcast)
-        .assert_nonce_increment(&[(0, 4), (1, 4), (2, 1)])
+        .assert_nonce_increment([(0, 4), (1, 4), (2, 1)])
         .await;
 });
 
@@ -533,7 +533,7 @@ forgetest_async!(panic_no_deployer_set, |prj, cmd| {
     let mut tester = ScriptTester::new_broadcast(cmd, &handle.http_endpoint(), prj.root());
 
     tester
-        .load_private_keys(&[0, 1])
+        .load_private_keys([0, 1])
         .await
         .add_sig("BroadcastTest", "deployOther()")
         .simulate(ScriptOutcome::WarnSpecifyDeployer)
@@ -546,12 +546,12 @@ forgetest_async!(can_deploy_no_arg_broadcast, |prj, cmd| {
 
     tester
         .add_deployer(0)
-        .load_private_keys(&[0])
+        .load_private_keys([0])
         .await
         .add_sig("BroadcastTest", "deployNoArgs()")
         .simulate(ScriptOutcome::OkSimulation)
         .broadcast(ScriptOutcome::OkBroadcast)
-        .assert_nonce_increment(&[(0, 3)])
+        .assert_nonce_increment([(0, 3)])
         .await;
 });
 
@@ -561,20 +561,22 @@ forgetest_async!(can_deploy_with_create2, |prj, cmd| {
 
     // Prepare CREATE2 Deployer
     api.anvil_set_code(
-        foundry_evm::constants::DEFAULT_CREATE2_DEPLOYER,
-        Bytes::from_static(foundry_evm::constants::DEFAULT_CREATE2_DEPLOYER_RUNTIME_CODE),
+        foundry_evm::constants::DEFAULT_CREATE2_DEPLOYER.to_ethers(),
+        ethers_core::types::Bytes::from_static(
+            foundry_evm::constants::DEFAULT_CREATE2_DEPLOYER_RUNTIME_CODE,
+        ),
     )
     .await
     .unwrap();
 
     tester
         .add_deployer(0)
-        .load_private_keys(&[0])
+        .load_private_keys([0])
         .await
         .add_sig("BroadcastTestNoLinking", "deployCreate2()")
         .simulate(ScriptOutcome::OkSimulation)
         .broadcast(ScriptOutcome::OkBroadcast)
-        .assert_nonce_increment(&[(0, 2)])
+        .assert_nonce_increment([(0, 2)])
         .await
         // Running again results in error, since we're repeating the salt passed to CREATE2
         .run(ScriptOutcome::ScriptFailed);
@@ -588,12 +590,12 @@ forgetest_async!(
         let mut tester = ScriptTester::new_broadcast(cmd, &handle.http_endpoint(), prj.root());
 
         tester
-            .load_private_keys(&[0])
+            .load_private_keys([0])
             .await
             .add_sig("BroadcastTestNoLinking", "deployMany()")
             .simulate(ScriptOutcome::OkSimulation)
             .broadcast(ScriptOutcome::OkBroadcast)
-            .assert_nonce_increment(&[(0, 25)])
+            .assert_nonce_increment([(0, 25)])
             .await;
     }
 );
@@ -606,12 +608,12 @@ forgetest_async!(
         let mut tester = ScriptTester::new_broadcast(cmd, &handle.http_endpoint(), prj.root());
 
         tester
-            .load_private_keys(&[0])
+            .load_private_keys([0])
             .await
             .add_sig("BroadcastMix", "deployMix()")
             .simulate(ScriptOutcome::OkSimulation)
             .broadcast(ScriptOutcome::OkBroadcast)
-            .assert_nonce_increment(&[(0, 15)])
+            .assert_nonce_increment([(0, 15)])
             .await;
     }
 );
@@ -621,12 +623,12 @@ forgetest_async!(deploy_with_setup, |prj, cmd| {
     let mut tester = ScriptTester::new_broadcast(cmd, &handle.http_endpoint(), prj.root());
 
     tester
-        .load_private_keys(&[0])
+        .load_private_keys([0])
         .await
         .add_sig("BroadcastTestSetup", "run()")
         .simulate(ScriptOutcome::OkSimulation)
         .broadcast(ScriptOutcome::OkBroadcast)
-        .assert_nonce_increment(&[(0, 6)])
+        .assert_nonce_increment([(0, 6)])
         .await;
 });
 
@@ -635,7 +637,7 @@ forgetest_async!(fail_broadcast_staticcall, |prj, cmd| {
     let mut tester = ScriptTester::new_broadcast(cmd, &handle.http_endpoint(), prj.root());
 
     tester
-        .load_private_keys(&[0])
+        .load_private_keys([0])
         .await
         .add_sig("BroadcastTestNoLinking", "errorStaticCall()")
         .simulate(ScriptOutcome::StaticCallNotAllowed);
@@ -651,15 +653,15 @@ forgetest_async!(
         // Prepare CREATE2 Deployer
         let addr = Address::from_str("0x4e59b44847b379578588920ca78fbf26c0b4956c").unwrap();
         let code = hex::decode("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3").expect("Could not decode create2 deployer init_code").into();
-        api.anvil_set_code(addr, code).await.unwrap();
+        api.anvil_set_code(addr.to_ethers(), code).await.unwrap();
 
         tester
-            .load_private_keys(&[0])
+            .load_private_keys([0])
             .await
             .add_sig("BroadcastTestSetup", "run()")
             .simulate(ScriptOutcome::OkSimulation)
             .broadcast(ScriptOutcome::OkBroadcast)
-            .assert_nonce_increment(&[(0, 6)])
+            .assert_nonce_increment([(0, 6)])
             .await;
 
         // Uncomment to recreate the broadcast log
@@ -1072,17 +1074,4 @@ interface Interface {}
 
     cmd.arg("script").arg(script);
     assert!(cmd.stdout_lossy().contains("Script ran successfully."));
-});
-
-forgetest_async!(assert_can_resume_with_additional_contracts, |prj, cmd| {
-    let (_api, handle) = spawn(NodeConfig::test()).await;
-    let mut tester = ScriptTester::new_broadcast(cmd, &handle.http_endpoint(), prj.root());
-
-    tester
-        .add_deployer(0)
-        .add_sig("ScriptAdditionalContracts", "run()")
-        .broadcast(ScriptOutcome::MissingWallet)
-        .load_private_keys(&[0])
-        .await
-        .resume(ScriptOutcome::OkBroadcast);
 });

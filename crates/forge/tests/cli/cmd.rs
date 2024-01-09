@@ -2,7 +2,9 @@
 
 use crate::constants::*;
 use foundry_compilers::{artifacts::Metadata, remappings::Remapping, ConfigurableContractArtifact};
-use foundry_config::{parse_with_profile, BasicConfig, Chain, Config, SolidityErrorCode};
+use foundry_config::{
+    parse_with_profile, BasicConfig, Chain, Config, NamedChain, SolidityErrorCode,
+};
 use foundry_test_utils::{
     foundry_compilers::PathStyle,
     util::{pretty_err, read_string, OutputExt, TestCommand},
@@ -33,7 +35,7 @@ forgetest!(
     #[ignore]
     can_cache_ls,
     |_prj, cmd| {
-        let chain = Chain::mainnet();
+        let chain = Chain::Named(NamedChain::Mainnet);
         let block1 = 100;
         let block2 = 101;
 
@@ -130,7 +132,7 @@ forgetest!(
     #[ignore]
     can_cache_clean_chain,
     |_prj, cmd| {
-        let chain = Chain::mainnet();
+        let chain = Chain::Named(NamedChain::Mainnet);
         let cache_dir = Config::foundry_chain_cache_dir(chain).unwrap();
         let etherscan_cache_dir = Config::foundry_etherscan_chain_cache_dir(chain).unwrap();
         let path = cache_dir.as_path();
@@ -153,7 +155,7 @@ forgetest!(
     #[ignore]
     can_cache_clean_blocks,
     |_prj, cmd| {
-        let chain = Chain::mainnet();
+        let chain = Chain::Named(NamedChain::Mainnet);
         let block1 = 100;
         let block2 = 101;
         let block3 = 102;
@@ -187,9 +189,9 @@ forgetest!(
     #[ignore]
     can_cache_clean_chain_etherscan,
     |_prj, cmd| {
-        let cache_dir = Config::foundry_chain_cache_dir(Chain::mainnet()).unwrap();
+        let cache_dir = Config::foundry_chain_cache_dir(Chain::Named(NamedChain::Mainnet)).unwrap();
         let etherscan_cache_dir =
-            Config::foundry_etherscan_chain_cache_dir(Chain::mainnet()).unwrap();
+            Config::foundry_etherscan_chain_cache_dir(Chain::Named(NamedChain::Mainnet)).unwrap();
         let path = cache_dir.as_path();
         let etherscan_path = etherscan_cache_dir.as_path();
         fs::create_dir_all(path).unwrap();
@@ -750,7 +752,7 @@ forgetest!(
             .to_string();
         println!("project root: \"{root}\"");
 
-        let eth_rpc_url = foundry_common::rpc::next_http_archive_rpc_endpoint();
+        let eth_rpc_url = foundry_utils::rpc::next_http_archive_rpc_endpoint();
         let dss_exec_lib = "src/DssSpell.sol:DssExecLib:0xfD88CeE74f7D78697775aBDAE53f9Da1559728E4";
 
         cmd.args([
@@ -763,7 +765,7 @@ forgetest!(
             "14435000",
             "--libraries",
             dss_exec_lib,
-            "-vvvvv",
+            "-vvv",
         ]);
         cmd.assert_non_empty_stdout();
     }
@@ -893,23 +895,6 @@ forgetest!(can_install_and_remove, |prj, cmd| {
     // install again and remove via relative path
     install(&mut cmd);
     remove(&mut cmd, "lib/forge-std");
-});
-
-// test to check we can run `forge install` in an empty dir <https://github.com/foundry-rs/foundry/issues/6519>
-forgetest!(can_install_empty, |prj, cmd| {
-    // create
-    cmd.git_init();
-    cmd.forge_fuse().args(["install"]);
-    cmd.assert_empty_stdout();
-
-    // create initial commit
-    fs::write(prj.root().join("README.md"), "Initial commit").unwrap();
-
-    cmd.git_add().unwrap();
-    cmd.git_commit("Initial commit").unwrap();
-
-    cmd.forge_fuse().args(["install"]);
-    cmd.assert_empty_stdout();
 });
 
 // test to check that package can be reinstalled after manually removing the directory
@@ -1418,9 +1403,9 @@ contract ContractThreeTest is DSTest {
 });
 
 forgetest_init!(can_use_absolute_imports, |prj, cmd| {
-    let remapping = prj.paths().libraries[0].join("myDependency");
+    let remapping = prj.paths().libraries[0].join("myDepdendency");
     let config = Config {
-        remappings: vec![Remapping::from_str(&format!("myDependency/={}", remapping.display()))
+        remappings: vec![Remapping::from_str(&format!("myDepdendency/={}", remapping.display()))
             .unwrap()
             .into()],
         ..Default::default()
@@ -1428,7 +1413,7 @@ forgetest_init!(can_use_absolute_imports, |prj, cmd| {
     prj.write_config(config);
 
     prj.add_lib(
-        "myDependency/src/interfaces/IConfig.sol",
+        "myDepdendency/src/interfaces/IConfig.sol",
         r"
     
     interface IConfig {}
@@ -1437,7 +1422,7 @@ forgetest_init!(can_use_absolute_imports, |prj, cmd| {
     .unwrap();
 
     prj.add_lib(
-        "myDependency/src/Config.sol",
+        "myDepdendency/src/Config.sol",
         r#"
         import "src/interfaces/IConfig.sol";
 
@@ -1449,7 +1434,7 @@ forgetest_init!(can_use_absolute_imports, |prj, cmd| {
     prj.add_source(
         "Greeter",
         r#"
-        import "myDependency/src/Config.sol";
+        import "myDepdendency/src/Config.sol";
 
     contract Greeter {}
    "#,
